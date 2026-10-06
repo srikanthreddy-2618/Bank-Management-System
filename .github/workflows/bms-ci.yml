@@ -1,0 +1,37 @@
+name: BMS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate repository structure
+        shell: bash
+        run: |
+          set -e
+          test -f README.md
+          test -f BMS_SRS.pdf
+          test -f BMS_SAD.pdf
+          test -f BMS_Test_Plan.pdf
+          echo "BMS repository structure validated."
+
+      - name: Check for accidental secrets
+        shell: bash
+        run: |
+          set -e
+          if grep -RniE 'password[[:space:]]*=[[:space:]]*["'\''"][^"'\'']+|api[_-]?key[[:space:]]*=[[:space:]]*["'\''"][^"'\'']+' --exclude-dir=.git .; then
+            echo "Potential hard-coded secret detected."
+            exit 1
+          fi
+          echo "No obvious hard-coded secrets detected."
