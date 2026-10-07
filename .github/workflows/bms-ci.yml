@@ -2,7 +2,7 @@ name: BMS CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**"]
   pull_request:
     branches: [main]
 
@@ -16,6 +16,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Syntax and structure checks
+        run: npm run check
+
+      - name: Run automated tests
+        run: npm test
+
       - name: Validate repository structure
         shell: bash
         run: |
@@ -24,13 +39,16 @@ jobs:
           test -f BMS_SRS.pdf
           test -f BMS_SAD.pdf
           test -f BMS_Test_Plan.pdf
+          test -f database/schema.sql
+          test -f backend/server.js
+          test -f frontend/index.html
           echo "BMS repository structure validated."
 
       - name: Check for accidental secrets
         shell: bash
         run: |
           set -e
-          if grep -RniE 'password[[:space:]]*=[[:space:]]*["'\''"][^"'\'']+|api[_-]?key[[:space:]]*=[[:space:]]*["'\''"][^"'\'']+' --exclude-dir=.git .; then
+          if grep -RniE 'password[[:space:]]*=[[:space:]]*["'\''][^"'\'']+|api[_-]?key[[:space:]]*=[[:space:]]*["'\''][^"'\'']+' --exclude-dir=.git --exclude-dir=node_modules .; then
             echo "Potential hard-coded secret detected."
             exit 1
           fi
