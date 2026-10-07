@@ -13,7 +13,7 @@ const PERSISTENCE = process.env.BMS_PERSISTENCE !== "false";
 const DATA_FILE = process.env.BMS_DATA_FILE || path.join(__dirname, "data", "db.json");
 const DEMO_MODE = process.env.BMS_DEMO_MODE !== "false";
 const OTP = process.env.BMS_DEMO_OTP || "123456";
-const JWT_SECRET = process.env.BMS_JWT_SECRET || "bms-academic-demo-change-me";
+const JWT_SECRET = process.env.BMS_JWT_SECRET || crypto.randomBytes(32).toString("hex");
 
 function now() {
   return new Date().toISOString();
