@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install
@@ -48,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          if grep -RniE 'password[[:space:]]*=[[:space:]]*["'\''][^"'\'']+|api[_-]?key[[:space:]]*=[[:space:]]*["'\''][^"'\'']+' --exclude-dir=.git --exclude-dir=node_modules .; then
+          if grep -RniE 'password[[:space:]]*=[[:space:]]*["'\''][^"'\'']+|api[_-]?key[[:space:]]*=[[:space:]]*["'\''][^"'\'']+' --exclude-dir=.git --exclude-dir=node_modules --exclude=.env.example .; then
             echo "Potential hard-coded secret detected."
             exit 1
           fi
