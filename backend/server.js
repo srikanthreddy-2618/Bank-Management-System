@@ -498,8 +498,9 @@ function createApp() {
     });
   });
 
-  app.get("*", (req, res) => {
-    if (req.path.startsWith("/api/")) return res.status(404).json({ error: "API route not found" });
+  app.use(express.static(path.join(__dirname, "..", "frontend")));
+
+  app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, "..", "frontend", "index.html"));
   });
 
@@ -508,7 +509,6 @@ function createApp() {
     res.status(500).json({ error: "Internal server error" });
   });
 
-  app.use(express.static(path.join(__dirname, "..", "frontend")));
   return app;
 }
 
