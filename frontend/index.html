@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BMS — Bank Management System</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>🏦 Bank Management System</h1>
+      <p>Secure banking operations — Sprint 1</p>
+    </div>
+    <button id="logoutBtn" class="secondary hidden">Logout</button>
+  </header>
+
+  <main>
+    <section id="loginView" class="panel auth-panel">
+      <h2>Secure Login</h2>
+      <p class="muted">Demo account: <b>customer@bms.local</b> / <b>Password@123</b></p>
+      <form id="loginForm">
+        <label>Email<input id="email" type="email" required value="customer@bms.local"></label>
+        <label>Password<input id="password" type="password" required value="Password@123"></label>
+        <button type="submit">Continue to OTP</button>
+      </form>
+      <form id="otpForm" class="hidden">
+        <label>OTP<input id="otp" inputmode="numeric" maxlength="6" required></label>
+        <p id="otpHint" class="muted"></p>
+        <button type="submit">Verify OTP & Login</button>
+      </form>
+      <p id="authMessage" class="message"></p>
+    </section>
+
+    <section id="dashboardView" class="hidden">
+      <div class="welcome">
+        <div><h2 id="welcomeName">Dashboard</h2><p id="roleText" class="muted"></p></div>
+        <div id="apiStatus" class="status">Checking API…</div>
+      </div>
+
+      <div id="accountCards" class="cards"></div>
+
+      <div class="grid">
+        <section class="panel">
+          <h3>Cash Deposit</h3>
+          <form id="depositForm">
+            <label>Account<select id="depositAccount"></select></label>
+            <label>Amount (₹)<input id="depositAmount" type="number" min="1" step="0.01" required></label>
+            <button type="submit">Deposit</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h3>Cash Withdrawal</h3>
+          <form id="withdrawForm">
+            <label>Account<select id="withdrawAccount"></select></label>
+            <label>Amount (₹)<input id="withdrawAmount" type="number" min="1" step="0.01" required></label>
+            <button type="submit">Withdraw</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h3>Fund Transfer</h3>
+          <form id="transferForm">
+            <label>From account<select id="transferAccount"></select></label>
+            <label>Beneficiary account number<input id="toAccount" required placeholder="1000002001"></label>
+            <label>Amount (₹)<input id="transferAmount" type="number" min="1" step="0.01" required></label>
+            <button type="submit">Transfer</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h3>Add Beneficiary</h3>
+          <form id="beneficiaryForm">
+            <label>Name<input id="beneficiaryName" required></label>
+            <label>Account number<input id="beneficiaryAccount" required></label>
+            <button type="submit">Add Beneficiary</button>
+          </form>
+          <div id="beneficiaryList" class="list"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="section-head"><h3>Transaction History</h3><button id="refreshBtn" class="secondary">Refresh</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th><th>Description</th></tr></thead>
+            <tbody id="transactionBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>Profile</h3>
+        <form id="profileForm" class="inline-form">
+          <label>Name<input id="profileName" required></label>
+          <label>Phone<input id="profilePhone" required></label>
+          <button type="submit">Save Profile</button>
+        </form>
+      </section>
+    </section>
+    <div id="toast" class="toast"></div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
