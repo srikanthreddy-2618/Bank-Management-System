@@ -1,117 +1,124 @@
-# Bank-Management-System
-Software Engineering project – Bank Management System
 # 🏦 Bank Management System
 
-A Software Engineering project that implements a **Bank Management System (BMS)** for managing customers, bank accounts, transactions, fund transfers, loans, notifications, reports, and administrative operations.
+Software Engineering project — a secure, role-aware web application for core banking operations.
 
----
+## Team
 
-## 📌 Project Overview
+| Member | SRN | Role | GitHub |
+|---|---|---|---|
+| SRIKANTH V REDDY | PES2UG24CS519 | QA Lead | @srikanthreddy-2618 |
+| T. MAHALAKSHMI | PES2UG24CS558 | Test Engineer | @mahalakshmi-prog |
+| SUDHANWA | PES2UG24CS531 | Developer | @extrmly85 |
+| SRUJAN | PES2UG24CS526 | Product Owner / Bank Representative | @srujangithubit |
 
-The **Bank Management System** is designed to provide a secure and organized platform for performing common banking operations.
+## Current implementation
 
-The system supports different users such as **Customers, Bank Staff, Administrators, and Auditors**, with access controlled according to their roles.
+Sprint 1 now has a runnable web application covering the primary customer banking flow:
 
-The project focuses on:
-
-- Secure authentication and authorization
-- Customer and account management
-- Banking transactions
-- Fund transfers
-- Loan management
-- Notifications
-- Reports and statements
-- Audit logging
-- Security and role-based access control
-
----
-
-## 👥 Team Members
-
-| Name | SRN | Role |
-|---|---|---|
-| **SRIKANTH V REDDY** | PES2UG24CS519 | QA Lead |
-| **T. MAHALAKSHMI** | PES2UG24CS558 | Test Engineer |
-| **SUDHANWA** | PES2UG24CS531 | Developer |
-| **SRUJAN** | PES2UG24CS526 | Product Owner / Bank Representative |
-
----
-
-## ✨ Features
-
-### 🔐 Authentication & User Management
-- Secure customer and staff login
-- OTP-based verification
-- Customer profile management
-- KYC information management
-- Account creation and management
-- Role-based access control
-
-### 💰 Banking Transactions
+- Customer/staff password authentication
+- OTP verification
+- Customer profile and KYC status
+- Account viewing, staff account creation and lifecycle management
 - Balance inquiry
-- Cash deposits
-- Cash withdrawals
-- Fund transfers
-- Beneficiary management
+- Cash deposit
+- Cash withdrawal with insufficient-balance validation
+- Fund transfer
+- Beneficiary add/remove
 - Transaction history
-- Account statements
+- Notifications
+- Role-aware staff operations
+- Salted password hashing using Node.js scrypt
+- Five-attempt temporary login lockout
+- Audit logging without passwords/OTP values
 
-### 🏦 Loan Management
-- Loan application
-- Loan approval/rejection
-- Loan repayment schedule
-- Loan repayment tracking
-- Loan status management
+The application is intentionally scoped for the academic sprint demo. SMS/email OTP delivery and production MySQL integration are identified as follow-up work.
 
-### 🔔 Notifications
-Notifications can be generated for events such as:
-
-- Successful fund transfers
-- Withdrawals
-- Password changes
-- Loan status changes
-
-### 👨‍💼 Administration
-- User management
-- Role management
-- Account management
-- Operational reports
-- Audit logs
-- System monitoring
-
----
-
-## 🏗️ System Architecture
-
-The system follows a **layered service-oriented architecture**.
-
-Major components include:
+## Architecture
 
 ```text
-                 ┌──────────────────────┐
-                 │   Customer / Staff   │
-                 │         UI           │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │     API Gateway      │
-                 └──────────┬───────────┘
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                 │
-          ▼                 ▼                 ▼
-   Authentication      Account Service   Transaction Service
-      Service
-          │                 │                 │
-          │                 └────────┬────────┘
-          │                          │
-          ▼                          ▼
-   Notification                  Database
-     Service
-          │
-          ▼
-    Loan Service
-          │
-          ▼
-   Reporting & Audit
+Browser UI
+   │
+   ▼
+Node.js API
+   ├── Authentication + OTP
+   ├── Account Service
+   ├── Transaction Service
+   ├── Beneficiary Service
+   ├── Notification Service
+   └── Audit / RBAC
+   │
+   ├── Local JSON persistence (demo)
+   └── MySQL schema design (database/schema.sql)
+```
+
+The architecture is aligned with the submitted SRS/SAD, with the local JSON store used to keep the academic demo easy to run. `database/schema.sql` preserves the MySQL-oriented design for the planned persistent deployment.
+
+## Run locally
+
+Prerequisites: Node.js 20+.
+
+```bash
+npm install
+npm start
+```
+
+Open **http://localhost:3000**
+
+### Demo customer
+
+- Email: `customer@bms.local`
+- Password: `Password@123`
+- OTP in demo mode: `123456`
+
+A second demo account is available for transfer testing:
+
+- Account number: `1000002001`
+
+### Test
+
+```bash
+npm run check
+npm test
+```
+
+## Repository structure
+
+```text
+Bank-Management-System/
+├── backend/
+│   └── server.js
+├── frontend/
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
+├── database/
+│   └── schema.sql
+├── tests/
+│   └── api.test.js
+├── docs/
+│   ├── PROJECT_PLAN.md
+│   └── SPRINT1_IMPLEMENTATION.md
+├── .github/
+│   ├── pull_request_template.md
+│   └── workflows/bms-ci.yml
+├── BMS_SRS.pdf
+├── BMS_SAD.pdf
+├── BMS_Test_Plan.pdf
+└── README.md
+```
+
+## Agile / GitHub workflow
+
+The consolidated SRS backlog is tracked in GitHub Issues #20–#49 and planned across two sprints. The repository also contains a PR template and GitHub Actions CI.
+
+Development flow:
+
+```text
+Issue → Feature branch → Commit → Pull Request → CI → Review → Merge → Done
+```
+
+## Security demo notes
+
+The local demo uses a fixed OTP only when `BMS_DEMO_MODE=true`. The application does not write OTPs or passwords to logs. For deployment, set a strong `BMS_JWT_SECRET`, disable demo OTP mode and integrate an approved OTP delivery provider.
+
+See `docs/SPRINT1_IMPLEMENTATION.md` for the Sprint 1 scope and known deviations.
