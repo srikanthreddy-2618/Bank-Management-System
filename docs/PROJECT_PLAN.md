@@ -4,10 +4,10 @@
 
 | Member | SRN | Role |
 |---|---|---|
-| SRIKANTH V REDDY | PES2UG24CS519 | QA Lead |
-| T. MAHALAKSHMI | PES2UG24CS558 | Test Engineer |
-| SUDHANWA | PES2UG24CS531 | Developer |
-| SRUJAN | PES2UG24CS526 | Product Owner / Bank Representative |
+| SRIKANTH V REDDY | @srikanthreddy-2618 | PES2UG24CS519 | QA Lead |
+| T. MAHALAKSHMI | @mahalakshmi-prog | PES2UG24CS558 | Test Engineer |
+| SUDHANWA | @extrmly85 | PES2UG24CS531 | Developer |
+| SRUJAN | @srujangithubit | PES2UG24CS526 | Product Owner / Bank Representative |
 
 ## Sprint Schedule
 
