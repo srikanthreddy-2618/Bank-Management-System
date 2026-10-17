@@ -142,9 +142,10 @@ function loadStore() {
   try {
     const loaded = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
-    // Migrate existing demo stores created before withdrawal idempotency was introduced.
+    // Backward-compatible migration for older local demo files.
     if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
     if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
+    if (!Array.isArray(loaded.loans)) loaded.loans = [];
     return loaded;
   } catch {
     const initial = seedStore();
@@ -164,13 +165,29 @@ function saveStore() {
   fs.renameSync(tempFile, DATA_FILE);
 }
 
+function sanitizeAuditMetadata(value) {
+  const forbiddenKey = /(password|otp|token|secret|authorization|credential|cookie)/i;
+  if (Array.isArray(value)) return value.map(sanitizeAuditMetadata);
+  if (value && typeof value === "object") {
+    const safe = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (!forbiddenKey.test(key)) safe[key] = sanitizeAuditMetadata(item);
+    }
+    return safe;
+  }
+  if (typeof value === "string") {
+    return value.replace(/(password|otp|token|secret|authorization|credential)\s*[:=]\s*[^\s,;]+/ig, "$1=[REDACTED]");
+  }
+  return value;
+}
+
 function audit(action, userId, metadata = {}) {
   store.auditLogs.push({
     id: id("aud-"),
     action,
-    userId,
+    userId: userId || null,
     timestamp: now(),
-    metadata: JSON.parse(JSON.stringify(metadata))
+    metadata: sanitizeAuditMetadata(metadata)
   });
   saveStore();
 }
@@ -254,9 +271,13 @@ function createApp({ freshStore = false } = {}) {
     if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
 
     const user = store.users.find(u => u.email.toLowerCase() === String(email).toLowerCase());
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    if (!user) {
+      audit("AUTHENTICATION_FAILED", null, { reason: "UNKNOWN_USER" });
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      audit("AUTHENTICATION_BLOCKED", user.id, { reason: "ACCOUNT_LOCKED" });
       return res.status(423).json({ error: "Account temporarily locked. Try again later." });
     }
 
@@ -267,6 +288,7 @@ function createApp({ freshStore = false } = {}) {
         user.lockedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       }
       saveStore();
+      audit("AUTHENTICATION_FAILED", user.id, { reason: "INVALID_PASSWORD", failedAttempts: user.failedAttempts });
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -289,6 +311,9 @@ function createApp({ freshStore = false } = {}) {
     const { userId, otp } = req.body || {};
     const entry = store.otps[userId];
     if (!entry || Date.now() > entry.expiresAt || String(otp) !== String(entry.otp)) {
+      const knownUser = store.users.find(user => user.id === userId);
+      const reason = !entry ? "OTP_NOT_FOUND" : Date.now() > entry.expiresAt ? "OTP_EXPIRED" : "INVALID_OTP";
+      audit("OTP_VERIFICATION_FAILED", knownUser?.id || null, { reason });
       return res.status(401).json({ error: "Invalid or expired OTP" });
     }
     delete store.otps[userId];
@@ -441,21 +466,29 @@ function createApp({ freshStore = false } = {}) {
   app.post("/api/loans/:id/repayments", authRequired, (req, res) => {
     const loan = (store.loans || []).find(item => item.id === req.params.id);
     if (!loan) return res.status(404).json({ error: "Loan not found" });
-    if (loan.userId !== req.user.id && req.user.role !== "STAFF") return res.status(403).json({ error: "Unauthorized loan" });
+    if (loan.userId !== req.user.id || req.user.role !== "CUSTOMER") return res.status(403).json({ error: "Only the loan holder can make a repayment" });
     if (loan.status !== "APPROVED" || loan.outstandingBalance === null) {
       return res.status(400).json({ error: "Only approved loans can be repaid" });
     }
+    const account = ownedAccount(req.user, req.body?.accountId);
+    if (account === undefined) return res.status(403).json({ error: "Unauthorized repayment account" });
+    if (!account) return res.status(404).json({ error: "Repayment account not found" });
+    if (account.userId !== loan.userId) return res.status(403).json({ error: "Repayment account must belong to the loan holder" });
+    if (account.status !== "ACTIVE") return res.status(400).json({ error: "Repayment account is not active" });
     const amount = positiveAmount(req.body?.amount);
     if (!amount) return res.status(400).json({ error: "Repayment amount must be positive" });
-    if (amount > loan.outstandingBalance + 0.0001) {
-      return res.status(400).json({ error: "Repayment exceeds outstanding balance" });
-    }
+    if (amount > loan.outstandingBalance + 0.0001) return res.status(400).json({ error: "Repayment exceeds outstanding balance" });
+    if (account.balance < amount) return res.status(400).json({ error: "Insufficient funds in repayment account" });
+
+    // Update the customer's account and loan ledger in the same in-memory operation.
+    account.balance = Math.round((account.balance - amount) * 100) / 100;
     loan.outstandingBalance = Math.max(0, Math.round((loan.outstandingBalance - amount) * 100) / 100);
     loan.lastRepaymentAt = now();
     if (loan.outstandingBalance === 0) loan.status = "PAID";
     const repayment = {
       id: id("repay-"),
       loanId: loan.id,
+      accountId: account.id,
       userId: loan.userId,
       amount,
       outstandingAfter: loan.outstandingBalance,
@@ -463,10 +496,23 @@ function createApp({ freshStore = false } = {}) {
     };
     if (!Array.isArray(loan.repayments)) loan.repayments = [];
     loan.repayments.push(repayment);
+    const transaction = {
+      id: id("txn-"),
+      accountId: account.id,
+      type: "LOAN_REPAYMENT",
+      amount,
+      balanceAfter: account.balance,
+      description: "Loan repayment " + loan.id,
+      loanId: loan.id,
+      repaymentId: repayment.id,
+      createdAt: now(),
+      status: "SUCCESS"
+    };
+    store.transactions.push(transaction);
     addNotification(loan.userId, "Loan repayment recorded", "A repayment of ₹" + amount.toFixed(2) + " was recorded.");
     saveStore();
-    audit("LOAN_REPAYMENT_RECORDED", req.user.id, { loanId: loan.id, repaymentId: repayment.id, amount, outstandingAfter: loan.outstandingBalance });
-    return res.status(201).json({ repayment, loan });
+    audit("LOAN_REPAYMENT_RECORDED", req.user.id, { loanId: loan.id, repaymentId: repayment.id, accountId: account.id, amount, outstandingAfter: loan.outstandingBalance });
+    return res.status(201).json({ repayment, transaction, account: publicAccount(account), loan });
   });
 
   app.get("/api/transactions", authRequired, (req, res) => {
