@@ -1,4 +1,15 @@
-const state = { token: localStorage.getItem("bmsToken"), pendingUserId: null, accounts: [] };
+function readPendingWithdrawal() {
+  try { return JSON.parse(sessionStorage.getItem("bmsPendingWithdrawal") || "null"); }
+  catch { return null; }
+}
+
+const state = {
+  token: localStorage.getItem("bmsToken"),
+  pendingUserId: null,
+  accounts: [],
+  // Kept in sessionStorage so refresh/retry after a timeout reuses the same request key.
+  pendingWithdrawal: readPendingWithdrawal()
+};
 const $ = id => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -113,11 +124,50 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 }
 
-async function transaction(endpoint, accountField, amountField) {
+function newIdempotencyKey() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+  return "withdraw-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+}
+
+function setPendingWithdrawal(request) {
+  state.pendingWithdrawal = request;
   try {
-    await api(endpoint, { method: "POST", body: JSON.stringify({ accountId: $(accountField).value, amount: Number($(amountField).value) }) });
-    $(amountField).value = ""; await loadDashboard(); toast("Transaction completed successfully");
-  } catch(e){ toast(e.message); }
+    if (request) sessionStorage.setItem("bmsPendingWithdrawal", JSON.stringify(request));
+    else sessionStorage.removeItem("bmsPendingWithdrawal");
+  } catch {
+    // The in-memory key still protects same-page retries if session storage is unavailable.
+  }
+}
+
+async function transaction(endpoint, accountField, amountField) {
+  const accountId = $(accountField).value;
+  const amount = Number($(amountField).value);
+  const isWithdrawal = endpoint === "/api/transactions/withdraw";
+  const headers = {};
+
+  if (isWithdrawal) {
+    const pending = state.pendingWithdrawal;
+    if (!pending || pending.accountId !== accountId || pending.amount !== amount) {
+      setPendingWithdrawal({ key: newIdempotencyKey(), accountId, amount });
+    }
+    headers["Idempotency-Key"] = state.pendingWithdrawal.key;
+  }
+
+  try {
+    await api(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ accountId, amount })
+    });
+    if (isWithdrawal) setPendingWithdrawal(null);
+    $(amountField).value = "";
+    await loadDashboard();
+    toast("Transaction completed successfully");
+  } catch(e) {
+    // Keep the withdrawal key after a timeout/network error; submitting the same
+    // account and amount again will safely replay the original server result.
+    toast(e.message);
+  }
 }
 
 $("loginForm").onsubmit = login;
