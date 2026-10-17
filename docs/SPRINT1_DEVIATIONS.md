@@ -9,6 +9,7 @@ This document records implementation differences from the submitted BMS SRS/SAD.
 | Transport security | TLS 1.2+ requirement | HTTPS is not terminated by the Node demo server in local development | Local demo is intended for localhost execution | Run behind HTTPS/TLS in the final deployment/test environment and document evidence |
 | Staff/admin UI | SRS/SAD include administrative capabilities | Staff operations are exposed through protected API routes; the current UI focuses on the customer Sprint 1 flow | Sprint 1 demo prioritizes the core customer journey | Add administrative UI in Sprint 2 |
 | Idempotency storage | Durable transaction/idempotency persistence | Withdrawal request keys and responses are saved with the local JSON demo store | Sprint 1 uses a self-contained demo store | For production, enforce an idempotency-key uniqueness constraint and save the key, debit, and ledger entry in one database transaction |
+| Idempotency storage | Durable transaction/idempotency persistence | Withdrawal request keys and responses are saved with the local JSON demo store | Sprint 1 uses a self-contained demo store | For production, enforce an idempotency-key uniqueness constraint and save the key, debit, and ledger entry in one database transaction |
 
 ## Assessment
 
