@@ -143,9 +143,14 @@ async function loadLoans() {
   body.innerHTML = state.loans.map(loan => {
     let action = "—";
     if (state.userRole === "STAFF" && loan.status === "PENDING") {
+      const disbursementOptions = state.accounts
+        .filter(account => account.userId === loan.userId && account.status === "ACTIVE")
+        .map(account => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.accountNumber)} (₹${Number(account.balance).toFixed(2)})</option>`)
+        .join("");
       action = `<div class="loan-actions">
+        <label>Credit to applicant account<select data-disbursement-account="${escapeHtml(loan.id)}">${disbursementOptions}</select></label>
         <label>Annual rate (%)<input type="number" min="0" max="100" step="0.01" value="8.5" data-loan-rate="${escapeHtml(loan.id)}"></label>
-        <button type="button" data-loan-decision="APPROVED" data-loan-id="${escapeHtml(loan.id)}">Approve</button>
+        <button type="button" data-loan-decision="APPROVED" data-loan-id="${escapeHtml(loan.id)}">Approve & disburse</button>
         <button type="button" class="secondary" data-loan-decision="REJECTED" data-loan-id="${escapeHtml(loan.id)}">Reject</button>
       </div>`;
     } else if (state.userRole === "CUSTOMER" && loan.status === "APPROVED" && Number(loan.outstandingBalance) > 0) {
@@ -176,7 +181,10 @@ async function loadLoans() {
       const decision = button.dataset.loanDecision;
       const rate = document.querySelector(`[data-loan-rate="${loanId}"]`);
       const payload = { decision };
-      if (decision === "APPROVED") payload.annualRatePercent = Number(rate.value);
+      if (decision === "APPROVED") {
+        payload.annualRatePercent = Number(rate.value);
+        payload.disbursementAccountId = document.querySelector(`[data-disbursement-account="${loanId}"]`).value;
+      }
       try {
         await api("/api/loans/" + encodeURIComponent(loanId) + "/decision", {
           method: "PATCH", body: JSON.stringify(payload)
