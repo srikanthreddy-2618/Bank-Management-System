@@ -52,7 +52,7 @@ The script warms up and measures 100 requests per endpoint by default and prints
 - `GET /api/accounts` as a customer
 - `GET /api/admin/reports/summary` as staff
 
-The CI workflow runs this benchmark with a configurable p95 threshold of 2,000 ms. The latest observed run measured p95 at 2.22 ms for health, 1.13 ms for customer account listing and 1.14 ms for staff report generation. The issue body does not state a numeric SRS threshold, and the PDF source did not resolve to searchable text during this implementation pass. Therefore, 2,000 ms is a provisional engineering threshold, not evidence that the exact SRS value has been confirmed. Set `BMS_PERFORMANCE_TARGET_MS` to the exact value from the submitted SRS once verified. Results measure a local in-memory demo and do not include a production database or network latency.
+The CI workflow runs this benchmark with a configurable p95 threshold of 2,000 ms. The latest validated run measured p95 at 1.93 ms for health, 1.16 ms for customer account listing and 1.29 ms for staff report generation ([CI evidence](https://github.com/srikanthreddy-2618/Bank-Management-System/actions/runs/39006185348)). The issue body does not state a numeric SRS threshold, and the PDF source did not resolve to searchable text during this implementation pass. Therefore, 2,000 ms is a provisional engineering threshold, not evidence that the exact SRS value has been confirmed. Set `BMS_PERFORMANCE_TARGET_MS` to the exact value from the submitted SRS once verified. Results measure a local in-memory demo and do not include a production database or network latency.
 
 Optional variables:
 - `BMS_PERFORMANCE_TARGET_MS`: allowed p95 latency in milliseconds.
