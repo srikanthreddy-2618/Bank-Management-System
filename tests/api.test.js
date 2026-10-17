@@ -247,13 +247,16 @@ test("customer can apply for a loan and staff can approve it with a repayment sc
   const decision = await fetch(base + "/api/loans/" + applicationBody.loan.id + "/decision", {
     method: "PATCH",
     headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
-    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 12 })
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 12, disbursementAccountId: "acc-1001" })
   });
   assert.equal(decision.status, 200);
   const loan = (await decision.json()).loan;
   assert.equal(loan.status, "APPROVED");
-  assert.equal(loan.outstandingBalance, 12000);
+  assert.ok(loan.outstandingBalance > 12000);
   assert.ok(loan.repaymentAmount > 1000);
+  assert.equal(await accountBalance(base, customerToken), 22000);
+  const customerTransactions = await accountTransactions(base, customerToken);
+  assert.ok(customerTransactions.some(item => item.type === "LOAN_DISBURSEMENT" && item.amount === 12000));
 });
 
 test("loan repayment debits the account, reduces outstanding balance and enters transaction history", async t => {
@@ -268,7 +271,7 @@ test("loan repayment debits the account, reduces outstanding balance and enters 
   const decision = await fetch(base + "/api/loans/" + loan.id + "/decision", {
     method: "PATCH",
     headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
-    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0 })
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
   });
   assert.equal(decision.status, 200);
 
@@ -278,7 +281,7 @@ test("loan repayment debits the account, reduces outstanding balance and enters 
   assert.equal(repayment.status, 201);
   const repaymentBody = await repayment.json();
   assert.equal(repaymentBody.loan.outstandingBalance, 4500);
-  assert.equal(repaymentBody.account.balance, 8500);
+  assert.equal(repaymentBody.account.balance, 14500);
   assert.equal(repaymentBody.transaction.type, "LOAN_REPAYMENT");
 
   const transactions = await accountTransactions(base, customerToken);
@@ -296,7 +299,7 @@ test("invalid and unauthorized loan operations do not alter balances or loan sta
   const customerDecision = await fetch(base + "/api/loans/" + loan.id + "/decision", {
     method: "PATCH",
     headers: { "content-type": "application/json", authorization: "Bearer " + customerToken },
-    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0 })
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
   });
   assert.equal(customerDecision.status, 403);
 
@@ -304,7 +307,7 @@ test("invalid and unauthorized loan operations do not alter balances or loan sta
   const approval = await fetch(base + "/api/loans/" + loan.id + "/decision", {
     method: "PATCH",
     headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
-    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0 })
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
   });
   assert.equal(approval.status, 200);
 
@@ -312,13 +315,13 @@ test("invalid and unauthorized loan operations do not alter balances or loan sta
     accountId: "acc-1001", amount: 999999
   }, customerToken);
   assert.equal(overpayment.status, 400);
-  assert.equal(await accountBalance(base, customerToken), 10000);
+  assert.equal(await accountBalance(base, customerToken), 12000);
 
   const noAccount = await post(base, "/api/loans/" + loan.id + "/repayments", {
     amount: 50
   }, customerToken);
   assert.equal(noAccount.status, 404);
-  assert.equal(await accountBalance(base, customerToken), 10000);
+  assert.equal(await accountBalance(base, customerToken), 12000);
 });
 
 test("operational report is staff-only and returns aggregate banking metrics", async t => {
