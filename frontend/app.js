@@ -3,6 +3,11 @@ function readPendingWithdrawal() {
   catch { return null; }
 }
 
+function readPendingLoanRepayments() {
+  try { return JSON.parse(sessionStorage.getItem("bmsPendingLoanRepayments") || "{}"); }
+  catch { return {}; }
+}
+
 const state = {
   token: localStorage.getItem("bmsToken"),
   pendingUserId: null,
@@ -10,7 +15,8 @@ const state = {
   accounts: [],
   loans: [],
   // Kept in sessionStorage so refresh/retry after a timeout reuses the same request key.
-  pendingWithdrawal: readPendingWithdrawal()
+  pendingWithdrawal: readPendingWithdrawal(),
+  pendingLoanRepayments: readPendingLoanRepayments()
 };
 const $ = id => document.getElementById(id);
 
@@ -203,11 +209,20 @@ async function loadLoans() {
       const loanId = button.dataset.repayLoan;
       const accountField = document.querySelector(`[data-repay-account="${loanId}"]`);
       const amountField = document.querySelector(`[data-repay-amount="${loanId}"]`);
+      const accountId = accountField.value;
+      const amount = Number(amountField.value);
+      const previous = state.pendingLoanRepayments[loanId];
+      if (!previous || previous.accountId !== accountId || previous.amount !== amount) {
+        setPendingLoanRepayment(loanId, { key: newIdempotencyKey(), accountId, amount });
+      }
+      const request = state.pendingLoanRepayments[loanId];
       try {
         await api("/api/loans/" + encodeURIComponent(loanId) + "/repayments", {
           method: "POST",
-          body: JSON.stringify({ accountId: accountField.value, amount: Number(amountField.value) })
+          headers: { "Idempotency-Key": request.key },
+          body: JSON.stringify({ accountId, amount })
         });
+        setPendingLoanRepayment(loanId, null);
         $("loansMessage").textContent = "Repayment recorded; account balance and loan outstanding updated.";
         await loadDashboard();
         toast("Loan repayment recorded");
@@ -221,6 +236,16 @@ async function loadLoans() {
 async function loadOperationalReport() {
   const report = await api("/api/admin/reports/summary");
   $("operationalReportOutput").textContent = JSON.stringify(report, null, 2);
+}
+
+function setPendingLoanRepayment(loanId, request) {
+  if (request) state.pendingLoanRepayments[loanId] = request;
+  else delete state.pendingLoanRepayments[loanId];
+  try {
+    sessionStorage.setItem("bmsPendingLoanRepayments", JSON.stringify(state.pendingLoanRepayments));
+  } catch {
+    // Keep same-page retry protection even if session storage is unavailable.
+  }
 }
 
 function newIdempotencyKey() {
