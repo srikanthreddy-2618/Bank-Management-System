@@ -436,31 +436,68 @@ function createApp({ freshStore = false } = {}) {
     if (loan.status !== "PENDING") return res.status(409).json({ error: "Only pending applications can be decided" });
     const decision = req.body?.decision;
     if (decision !== "APPROVED" && decision !== "REJECTED") return res.status(400).json({ error: "Decision must be APPROVED or REJECTED" });
+
     let repaymentAmount = null;
     let outstandingBalance = null;
+    let disbursementAccount = null;
+    let disbursementTransaction = null;
+    let annualRatePercent = null;
+
     if (decision === "APPROVED") {
-      const annualRatePercent = Number(req.body?.annualRatePercent ?? 0);
+      annualRatePercent = Number(req.body?.annualRatePercent ?? 0);
       if (!Number.isFinite(annualRatePercent) || annualRatePercent < 0 || annualRatePercent > 100) {
         return res.status(400).json({ error: "Annual rate must be between 0 and 100 percent" });
+      }
+      const disbursementAccountId = String(req.body?.disbursementAccountId || "");
+      disbursementAccount = store.accounts.find(account => account.id === disbursementAccountId);
+      if (!disbursementAccount || disbursementAccount.userId !== loan.userId) {
+        return res.status(400).json({ error: "Select a valid account belonging to the loan applicant for disbursement" });
+      }
+      if (disbursementAccount.status !== "ACTIVE") {
+        return res.status(400).json({ error: "Loan disbursement account must be active" });
       }
       const monthlyRate = annualRatePercent / 1200;
       const payment = monthlyRate === 0
         ? loan.amount / loan.tenureMonths
         : loan.amount * monthlyRate / (1 - Math.pow(1 + monthlyRate, -loan.tenureMonths));
       repaymentAmount = Math.round(payment * 100) / 100;
-      outstandingBalance = loan.amount;
+      // Track the sum of rounded monthly installments (including interest).
+      outstandingBalance = Math.round(repaymentAmount * loan.tenureMonths * 100) / 100;
     }
+
     loan.status = decision;
-    loan.annualRatePercent = decision === "APPROVED" ? Number(req.body?.annualRatePercent ?? 0) : null;
+    loan.annualRatePercent = annualRatePercent;
     loan.repaymentAmount = repaymentAmount;
     loan.outstandingBalance = outstandingBalance;
     loan.decisionAt = now();
+
+    if (decision === "APPROVED") {
+      disbursementAccount.balance = Math.round((disbursementAccount.balance + loan.amount) * 100) / 100;
+      loan.disbursementAccountId = disbursementAccount.id;
+      disbursementTransaction = {
+        id: id("txn-"),
+        accountId: disbursementAccount.id,
+        type: "LOAN_DISBURSEMENT",
+        amount: loan.amount,
+        balanceAfter: disbursementAccount.balance,
+        description: "Loan disbursement " + loan.id,
+        loanId: loan.id,
+        createdAt: now(),
+        status: "SUCCESS"
+      };
+      store.transactions.push(disbursementTransaction);
+    }
+
     addNotification(loan.userId, "Loan application " + decision.toLowerCase(), decision === "APPROVED"
-      ? "Your loan was approved. Monthly repayment is ₹" + repaymentAmount.toFixed(2) + "."
+      ? "Your loan was approved and ₹" + Number(loan.amount).toFixed(2) + " was credited. Monthly repayment is ₹" + repaymentAmount.toFixed(2) + "."
       : "Your loan application was rejected.");
     saveStore();
-    audit("LOAN_APPLICATION_DECIDED", req.user.id, { loanId: loan.id, decision, repaymentAmount });
-    return res.json({ loan });
+    audit("LOAN_APPLICATION_DECIDED", req.user.id, {
+      loanId: loan.id, decision, repaymentAmount,
+      disbursementAccountId: disbursementAccount?.id || null,
+      disbursementTransactionId: disbursementTransaction?.id || null
+    });
+    return res.json({ loan, account: disbursementAccount ? publicAccount(disbursementAccount) : null, transaction: disbursementTransaction });
   });
 
   app.post("/api/loans/:id/repayments", authRequired, (req, res) => {
