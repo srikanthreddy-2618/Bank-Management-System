@@ -83,7 +83,13 @@ test("authenticated customer can deposit, withdraw and transfer", async t => {
   const deposit = await post(base, "/api/transactions/deposit", {
     accountId: "acc-1001", amount: 250
   }, token);
-  assert.equal(deposit.status, 201);
+assert.equal(deposit.status, 201);
+
+const depositBody = await deposit.json();
+assert.equal(depositBody.transaction.type, "DEPOSIT");
+assert.equal(depositBody.transaction.amount, 250);
+assert.equal(depositBody.transaction.balanceAfter, 10250);
+assert.equal(depositBody.account.balance, 10250);
 
   const withdrawal = await post(base, "/api/transactions/withdraw", {
     accountId: "acc-1001", amount: 100
@@ -223,4 +229,60 @@ test("successful and rejected withdrawal attempts are audited without passwords 
   const serializedLogs = JSON.stringify(logs);
   assert.equal(serializedLogs.includes("Password@123"), false);
   assert.equal(serializedLogs.includes("123456"), false);
+});
+
+test("invalid deposits are rejected without changing balance or creating transactions", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+
+  const invalidCases = [
+    { name: "zero amount", body: { accountId: "acc-1001", amount: 0 } },
+    { name: "negative amount", body: { accountId: "acc-1001", amount: -10 } },
+    { name: "missing amount", body: { accountId: "acc-1001" } },
+    { name: "missing account", body: { amount: 100 } },
+    { name: "unknown account", body: { accountId: "missing-account", amount: 100 } }
+  ];
+
+  for (const item of invalidCases) {
+    const response = await post(
+      base, "/api/transactions/deposit", item.body, token
+    );
+    assert.ok(
+      [400, 403, 404].includes(response.status),
+      `${item.name}: unexpected status ${response.status}`
+    );
+    assert.equal(
+      await accountBalance(base, token),
+      10000,
+      `${item.name} must not change the balance`
+    );
+  }
+
+  const transactions = await accountTransactions(base, token);
+  assert.equal(
+    transactions.filter(item => item.type === "DEPOSIT").length,
+    0,
+    "Rejected deposits must not create deposit transactions"
+  );
+});
+
+test("customer cannot deposit into another customer's account", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const response = await post(base, "/api/transactions/deposit", {
+    accountId: "acc-2001",
+    amount: 500
+  }, customerToken);
+
+  assert.equal(response.status, 403);
+  assert.equal(await accountBalance(base, customerToken), 10000);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25000);
+
+  const staffTransactions = await accountTransactions(base, staffToken, "acc-2001");
+  assert.equal(
+    staffTransactions.filter(item => item.type === "DEPOSIT").length,
+    0
+  );
 });
