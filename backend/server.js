@@ -113,6 +113,7 @@ function seedStore() {
       }
     ],
     beneficiaries: [],
+    loans: [],
     transactions: [],
     notifications: [
       {
@@ -141,9 +142,10 @@ function loadStore() {
   try {
     const loaded = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
-    // Migrate existing demo stores created before withdrawal idempotency was introduced.
+    // Backward-compatible migration for older local demo files.
     if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
     if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
+    if (!Array.isArray(loaded.loans)) loaded.loans = [];
     return loaded;
   } catch {
     const initial = seedStore();
@@ -163,13 +165,29 @@ function saveStore() {
   fs.renameSync(tempFile, DATA_FILE);
 }
 
+function sanitizeAuditMetadata(value) {
+  const forbiddenKey = /(password|otp|token|secret|authorization|credential|cookie)/i;
+  if (Array.isArray(value)) return value.map(sanitizeAuditMetadata);
+  if (value && typeof value === "object") {
+    const safe = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (!forbiddenKey.test(key)) safe[key] = sanitizeAuditMetadata(item);
+    }
+    return safe;
+  }
+  if (typeof value === "string") {
+    return value.replace(/(password|otp|token|secret|authorization|credential)\s*[:=]\s*[^\s,;]+/ig, "$1=[REDACTED]");
+  }
+  return value;
+}
+
 function audit(action, userId, metadata = {}) {
   store.auditLogs.push({
     id: id("aud-"),
     action,
-    userId,
+    userId: userId || null,
     timestamp: now(),
-    metadata: JSON.parse(JSON.stringify(metadata))
+    metadata: sanitizeAuditMetadata(metadata)
   });
   saveStore();
 }
@@ -253,9 +271,13 @@ function createApp({ freshStore = false } = {}) {
     if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
 
     const user = store.users.find(u => u.email.toLowerCase() === String(email).toLowerCase());
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    if (!user) {
+      audit("AUTHENTICATION_FAILED", null, { reason: "UNKNOWN_USER" });
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      audit("AUTHENTICATION_BLOCKED", user.id, { reason: "ACCOUNT_LOCKED" });
       return res.status(423).json({ error: "Account temporarily locked. Try again later." });
     }
 
@@ -266,6 +288,7 @@ function createApp({ freshStore = false } = {}) {
         user.lockedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       }
       saveStore();
+      audit("AUTHENTICATION_FAILED", user.id, { reason: "INVALID_PASSWORD", failedAttempts: user.failedAttempts });
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -288,6 +311,9 @@ function createApp({ freshStore = false } = {}) {
     const { userId, otp } = req.body || {};
     const entry = store.otps[userId];
     if (!entry || Date.now() > entry.expiresAt || String(otp) !== String(entry.otp)) {
+      const knownUser = store.users.find(user => user.id === userId);
+      const reason = !entry ? "OTP_NOT_FOUND" : Date.now() > entry.expiresAt ? "OTP_EXPIRED" : "INVALID_OTP";
+      audit("OTP_VERIFICATION_FAILED", knownUser?.id || null, { reason });
       return res.status(401).json({ error: "Invalid or expired OTP" });
     }
     delete store.otps[userId];
@@ -359,6 +385,207 @@ function createApp({ freshStore = false } = {}) {
     saveStore();
     audit("ACCOUNT_LIFECYCLE_CHANGED", req.user.id, { accountId: account.id, status });
     res.json({ account: publicAccount(account) });
+  });
+
+  app.post("/api/loans", authRequired, (req, res) => {
+    if (req.user.role !== "CUSTOMER") return res.status(403).json({ error: "Only customers can apply for loans" });
+    const requestedAmount = positiveAmount(req.body?.amount);
+    const purpose = typeof req.body?.purpose === "string" ? req.body.purpose.trim() : "";
+    const tenureMonths = Number(req.body?.tenureMonths);
+    if (!requestedAmount) return res.status(400).json({ error: "Loan amount must be positive" });
+    if (!Number.isInteger(tenureMonths) || tenureMonths < 1 || tenureMonths > 360) {
+      return res.status(400).json({ error: "Tenure must be between 1 and 360 months" });
+    }
+    if (purpose.length < 5 || purpose.length > 240) {
+      return res.status(400).json({ error: "Purpose must be between 5 and 240 characters" });
+    }
+    const loan = {
+      id: id("loan-"),
+      userId: req.user.id,
+      amount: requestedAmount,
+      purpose,
+      tenureMonths,
+      status: "PENDING",
+      repaymentAmount: null,
+      outstandingBalance: null,
+      submittedAt: now(),
+      decisionAt: null
+    };
+    store.loans.push(loan);
+    addNotification(req.user.id, "Loan application submitted", "Your application for ₹" + requestedAmount.toFixed(2) + " is pending review.");
+    saveStore();
+    audit("LOAN_APPLICATION_SUBMITTED", req.user.id, { loanId: loan.id, amount: requestedAmount, tenureMonths });
+    return res.status(201).json({ loan });
+  });
+
+  app.get("/api/loans", authRequired, (req, res) => {
+    const loans = (store.loans || []).filter(loan => req.user.role === "STAFF" || loan.userId === req.user.id);
+    return res.json({ loans: loans.slice().sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)) });
+  });
+
+  app.get("/api/loans/:id", authRequired, (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (req.user.role !== "STAFF" && loan.userId !== req.user.id) return res.status(403).json({ error: "Unauthorized loan" });
+    return res.json({ loan });
+  });
+
+  app.patch("/api/loans/:id/decision", authRequired, requireRole("STAFF"), (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (loan.status !== "PENDING") return res.status(409).json({ error: "Only pending applications can be decided" });
+    const decision = req.body?.decision;
+    if (decision !== "APPROVED" && decision !== "REJECTED") return res.status(400).json({ error: "Decision must be APPROVED or REJECTED" });
+
+    let repaymentAmount = null;
+    let outstandingBalance = null;
+    let disbursementAccount = null;
+    let disbursementTransaction = null;
+    let annualRatePercent = null;
+
+    if (decision === "APPROVED") {
+      annualRatePercent = Number(req.body?.annualRatePercent ?? 0);
+      if (!Number.isFinite(annualRatePercent) || annualRatePercent < 0 || annualRatePercent > 100) {
+        return res.status(400).json({ error: "Annual rate must be between 0 and 100 percent" });
+      }
+      const disbursementAccountId = String(req.body?.disbursementAccountId || "");
+      disbursementAccount = store.accounts.find(account => account.id === disbursementAccountId);
+      if (!disbursementAccount || disbursementAccount.userId !== loan.userId) {
+        return res.status(400).json({ error: "Select a valid account belonging to the loan applicant for disbursement" });
+      }
+      if (disbursementAccount.status !== "ACTIVE") {
+        return res.status(400).json({ error: "Loan disbursement account must be active" });
+      }
+      const monthlyRate = annualRatePercent / 1200;
+      const payment = monthlyRate === 0
+        ? loan.amount / loan.tenureMonths
+        : loan.amount * monthlyRate / (1 - Math.pow(1 + monthlyRate, -loan.tenureMonths));
+      repaymentAmount = Math.round(payment * 100) / 100;
+      // Track the sum of rounded monthly installments (including interest).
+      outstandingBalance = Math.round(repaymentAmount * loan.tenureMonths * 100) / 100;
+    }
+
+    loan.status = decision;
+    loan.annualRatePercent = annualRatePercent;
+    loan.repaymentAmount = repaymentAmount;
+    loan.outstandingBalance = outstandingBalance;
+    loan.decisionAt = now();
+
+    if (decision === "APPROVED") {
+      disbursementAccount.balance = Math.round((disbursementAccount.balance + loan.amount) * 100) / 100;
+      loan.disbursementAccountId = disbursementAccount.id;
+      disbursementTransaction = {
+        id: id("txn-"),
+        accountId: disbursementAccount.id,
+        type: "LOAN_DISBURSEMENT",
+        amount: loan.amount,
+        balanceAfter: disbursementAccount.balance,
+        description: "Loan disbursement " + loan.id,
+        loanId: loan.id,
+        createdAt: now(),
+        status: "SUCCESS"
+      };
+      store.transactions.push(disbursementTransaction);
+    }
+
+    addNotification(loan.userId, "Loan application " + decision.toLowerCase(), decision === "APPROVED"
+      ? "Your loan was approved and ₹" + Number(loan.amount).toFixed(2) + " was credited. Monthly repayment is ₹" + repaymentAmount.toFixed(2) + "."
+      : "Your loan application was rejected.");
+    saveStore();
+    audit("LOAN_APPLICATION_DECIDED", req.user.id, {
+      loanId: loan.id, decision, repaymentAmount,
+      disbursementAccountId: disbursementAccount?.id || null,
+      disbursementTransactionId: disbursementTransaction?.id || null
+    });
+    return res.json({ loan, account: disbursementAccount ? publicAccount(disbursementAccount) : null, transaction: disbursementTransaction });
+  });
+
+  app.post("/api/loans/:id/repayments", authRequired, (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (loan.userId !== req.user.id || req.user.role !== "CUSTOMER") return res.status(403).json({ error: "Only the loan holder can make a repayment" });
+
+    const accountId = typeof req.body?.accountId === "string" ? req.body.accountId : null;
+    const amount = positiveAmount(req.body?.amount);
+    const idempotencyKey = String(req.get("Idempotency-Key") || "").trim();
+    if (!/^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) {
+      audit("LOAN_REPAYMENT_REJECTED", req.user.id, { loanId: loan.id, reason: "MISSING_OR_INVALID_IDEMPOTENCY_KEY" });
+      return res.status(400).json({ error: "A valid Idempotency-Key header is required for loan repayments" });
+    }
+
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ loanId: loan.id, accountId, amount })).digest("hex");
+    const scopedKey = req.user.id + ":loan-repayment:" + idempotencyKey;
+    const previous = store.idempotencyKeys[scopedKey];
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) {
+        audit("LOAN_REPAYMENT_IDEMPOTENCY_CONFLICT", req.user.id, { loanId: loan.id, reason: "KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+        return res.status(409).json({ error: "Idempotency-Key was already used for a different repayment request" });
+      }
+      audit("LOAN_REPAYMENT_IDEMPOTENT_REPLAY", req.user.id, { loanId: loan.id, transactionId: previous.response.transaction.id });
+      return res.status(previous.statusCode || 201).json({ ...previous.response, idempotentReplay: true });
+    }
+
+    const reject = (status, error, reason) => {
+      audit("LOAN_REPAYMENT_REJECTED", req.user.id, { loanId: loan.id, reason });
+      return res.status(status).json({ error });
+    };
+    if (loan.status !== "APPROVED" || loan.outstandingBalance === null) {
+      return reject(400, "Only approved loans can be repaid", "LOAN_NOT_APPROVED");
+    }
+    const account = ownedAccount(req.user, accountId);
+    if (account === undefined) return reject(403, "Unauthorized repayment account", "UNAUTHORIZED_ACCOUNT");
+    if (!account) return reject(404, "Repayment account not found", "ACCOUNT_NOT_FOUND");
+    if (account.userId !== loan.userId) return reject(403, "Repayment account must belong to the loan holder", "ACCOUNT_NOT_OWNED");
+    if (account.status !== "ACTIVE") return reject(400, "Repayment account is not active", "ACCOUNT_NOT_ACTIVE");
+    if (!amount) return reject(400, "Repayment amount must be positive", "INVALID_AMOUNT");
+    if (amount > loan.outstandingBalance + 0.0001) return reject(400, "Repayment exceeds outstanding balance", "AMOUNT_EXCEEDS_OUTSTANDING");
+    if (account.balance < amount) return reject(400, "Insufficient funds in repayment account", "INSUFFICIENT_FUNDS");
+
+    account.balance = Math.round((account.balance - amount) * 100) / 100;
+    loan.outstandingBalance = Math.max(0, Math.round((loan.outstandingBalance - amount) * 100) / 100);
+    loan.lastRepaymentAt = now();
+    if (loan.outstandingBalance === 0) loan.status = "PAID";
+    const repayment = {
+      id: id("repay-"),
+      loanId: loan.id,
+      accountId: account.id,
+      userId: loan.userId,
+      amount,
+      outstandingAfter: loan.outstandingBalance,
+      createdAt: now()
+    };
+    if (!Array.isArray(loan.repayments)) loan.repayments = [];
+    loan.repayments.push(repayment);
+    const transaction = {
+      id: id("txn-"),
+      accountId: account.id,
+      type: "LOAN_REPAYMENT",
+      amount,
+      balanceAfter: account.balance,
+      description: "Loan repayment " + loan.id,
+      loanId: loan.id,
+      repaymentId: repayment.id,
+      createdAt: now(),
+      status: "SUCCESS"
+    };
+    store.transactions.push(transaction);
+    addNotification(loan.userId, "Loan repayment recorded", "A repayment of ₹" + amount.toFixed(2) + " was recorded.");
+
+    const response = { repayment, transaction, account: publicAccount(account), loan };
+    // Save the replay snapshot, debit and ledger records together in the demo store.
+    store.idempotencyKeys[scopedKey] = {
+      fingerprint,
+      statusCode: 201,
+      response: JSON.parse(JSON.stringify(response)),
+      createdAt: now()
+    };
+    saveStore();
+    audit("LOAN_REPAYMENT_RECORDED", req.user.id, {
+      loanId: loan.id, repaymentId: repayment.id, accountId: account.id, amount,
+      outstandingAfter: loan.outstandingBalance,
+      idempotencyKeyHash: crypto.createHash("sha256").update(idempotencyKey).digest("hex")
+    });
+    return res.status(201).json(response);
   });
 
   app.get("/api/transactions", authRequired, (req, res) => {
@@ -542,6 +769,54 @@ function createApp({ freshStore = false } = {}) {
 
   app.get("/api/notifications", authRequired, (req, res) => {
     res.json({ notifications: store.notifications.filter(n => n.userId === req.user.id) });
+  });
+
+  app.get("/api/admin/reports/summary", authRequired, requireRole("STAFF"), (req, res) => {
+    const accounts = store.accounts || [];
+    const transactions = store.transactions || [];
+    const loans = store.loans || [];
+    const auditLogs = store.auditLogs || [];
+    const deposits = transactions.filter(t => t.type === "DEPOSIT" && t.status === "SUCCESS");
+    const withdrawals = transactions.filter(t => t.type === "WITHDRAWAL" && t.status === "SUCCESS");
+    const transfersOut = transactions.filter(t => t.type === "TRANSFER_OUT" && t.status === "SUCCESS");
+    const sum = (items) => Math.round(items.reduce((total, item) => total + Number(item.amount || 0), 0) * 100) / 100;
+    const byType = {};
+    for (const transaction of transactions) {
+      const key = transaction.type || "UNKNOWN";
+      byType[key] = (byType[key] || 0) + 1;
+    }
+    const generatedAt = now();
+    audit("OPERATIONAL_REPORT_GENERATED", req.user.id, { report: "SUMMARY", generatedAt });
+    return res.json({
+      generatedAt,
+      scope: "CURRENT_LOCAL_DEMO_STORE",
+      accounts: {
+        total: accounts.length,
+        active: accounts.filter(a => a.status === "ACTIVE").length,
+        frozen: accounts.filter(a => a.status === "FROZEN").length,
+        closed: accounts.filter(a => a.status === "CLOSED").length,
+        totalBalance: Math.round(accounts.reduce((total, account) => total + Number(account.balance || 0), 0) * 100) / 100
+      },
+      transactions: {
+        total: transactions.length,
+        deposits: deposits.length,
+        depositAmount: sum(deposits),
+        withdrawals: withdrawals.length,
+        withdrawalAmount: sum(withdrawals),
+        transfersOut: transfersOut.length,
+        transferOutAmount: sum(transfersOut),
+        countByType: byType
+      },
+      loans: {
+        total: loans.length,
+        pending: loans.filter(loan => loan.status === "PENDING").length,
+        approved: loans.filter(loan => loan.status === "APPROVED").length,
+        rejected: loans.filter(loan => loan.status === "REJECTED").length,
+        paid: loans.filter(loan => loan.status === "PAID").length,
+        outstandingBalance: Math.round(loans.reduce((total, loan) => total + Number(loan.outstandingBalance || 0), 0) * 100) / 100
+      },
+      auditEvents: auditLogs.length
+    });
   });
 
   app.get("/api/admin/audit", authRequired, requireRole("STAFF"), (_req, res) => {
