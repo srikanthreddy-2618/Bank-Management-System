@@ -15,7 +15,7 @@ This implementation turns the BMS documentation backlog into a runnable web appl
 | BMS-F-005 | Staff account lifecycle API |
 | BMS-F-006 | Balance inquiry dashboard |
 | BMS-F-007 | Cash deposit |
-| BMS-F-008 | Cash withdrawal with insufficient-balance validation |
+| BMS-F-008 | Cash withdrawal with amount/balance validation, request idempotency and duplicate-retry protection |
 | BMS-F-009 | Fund transfer with source/destination validation |
 | BMS-F-010 | Beneficiary add/remove |
 | BMS-SR-002 | Passwords stored as salted scrypt hashes, never plaintext |
@@ -52,4 +52,4 @@ Demo transfer destination:
 npm test
 ```
 
-The CI workflow runs syntax checks, automated API tests, repository checks and the basic secret scan.
+The CI workflow runs syntax checks, automated API tests, repository checks and the basic secret scan. Withdrawal regression tests cover zero/negative amounts, missing/unauthorized accounts, insufficient funds, unchanged balances after rejection, transaction history, audit records and duplicate retries.
