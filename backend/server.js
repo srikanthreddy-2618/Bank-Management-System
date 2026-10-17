@@ -236,7 +236,9 @@ function ownedAccount(user, accountId) {
   return account;
 }
 
-function createApp() {
+function createApp({ freshStore = false } = {}) {
+  // Tests request a fresh in-memory store for isolation; production keeps its loaded store.
+  if (freshStore) store = loadStore();
   const app = express();
   app.use(helmet());
   app.use(cors());
