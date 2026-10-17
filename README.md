@@ -21,7 +21,7 @@ Sprint 1 now has a runnable web application covering the primary customer bankin
 - Account viewing, staff account creation and lifecycle management
 - Balance inquiry
 - Cash deposit
-- Cash withdrawal with insufficient-balance validation, required idempotency keys and duplicate-retry protection
+- Cash withdrawal with insufficient-balance validation, required idempotency keys and duplicate-retry protection, required idempotency keys and duplicate-retry protection
 - Fund transfer
 - Beneficiary add/remove
 - Transaction history
