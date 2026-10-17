@@ -504,20 +504,43 @@ function createApp({ freshStore = false } = {}) {
     const loan = (store.loans || []).find(item => item.id === req.params.id);
     if (!loan) return res.status(404).json({ error: "Loan not found" });
     if (loan.userId !== req.user.id || req.user.role !== "CUSTOMER") return res.status(403).json({ error: "Only the loan holder can make a repayment" });
-    if (loan.status !== "APPROVED" || loan.outstandingBalance === null) {
-      return res.status(400).json({ error: "Only approved loans can be repaid" });
-    }
-    const account = ownedAccount(req.user, req.body?.accountId);
-    if (account === undefined) return res.status(403).json({ error: "Unauthorized repayment account" });
-    if (!account) return res.status(404).json({ error: "Repayment account not found" });
-    if (account.userId !== loan.userId) return res.status(403).json({ error: "Repayment account must belong to the loan holder" });
-    if (account.status !== "ACTIVE") return res.status(400).json({ error: "Repayment account is not active" });
-    const amount = positiveAmount(req.body?.amount);
-    if (!amount) return res.status(400).json({ error: "Repayment amount must be positive" });
-    if (amount > loan.outstandingBalance + 0.0001) return res.status(400).json({ error: "Repayment exceeds outstanding balance" });
-    if (account.balance < amount) return res.status(400).json({ error: "Insufficient funds in repayment account" });
 
-    // Update the customer's account and loan ledger in the same in-memory operation.
+    const accountId = typeof req.body?.accountId === "string" ? req.body.accountId : null;
+    const amount = positiveAmount(req.body?.amount);
+    const idempotencyKey = String(req.get("Idempotency-Key") || "").trim();
+    if (!/^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) {
+      audit("LOAN_REPAYMENT_REJECTED", req.user.id, { loanId: loan.id, reason: "MISSING_OR_INVALID_IDEMPOTENCY_KEY" });
+      return res.status(400).json({ error: "A valid Idempotency-Key header is required for loan repayments" });
+    }
+
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ loanId: loan.id, accountId, amount })).digest("hex");
+    const scopedKey = req.user.id + ":loan-repayment:" + idempotencyKey;
+    const previous = store.idempotencyKeys[scopedKey];
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) {
+        audit("LOAN_REPAYMENT_IDEMPOTENCY_CONFLICT", req.user.id, { loanId: loan.id, reason: "KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+        return res.status(409).json({ error: "Idempotency-Key was already used for a different repayment request" });
+      }
+      audit("LOAN_REPAYMENT_IDEMPOTENT_REPLAY", req.user.id, { loanId: loan.id, transactionId: previous.response.transaction.id });
+      return res.status(previous.statusCode || 201).json({ ...previous.response, idempotentReplay: true });
+    }
+
+    const reject = (status, error, reason) => {
+      audit("LOAN_REPAYMENT_REJECTED", req.user.id, { loanId: loan.id, reason });
+      return res.status(status).json({ error });
+    };
+    if (loan.status !== "APPROVED" || loan.outstandingBalance === null) {
+      return reject(400, "Only approved loans can be repaid", "LOAN_NOT_APPROVED");
+    }
+    const account = ownedAccount(req.user, accountId);
+    if (account === undefined) return reject(403, "Unauthorized repayment account", "UNAUTHORIZED_ACCOUNT");
+    if (!account) return reject(404, "Repayment account not found", "ACCOUNT_NOT_FOUND");
+    if (account.userId !== loan.userId) return reject(403, "Repayment account must belong to the loan holder", "ACCOUNT_NOT_OWNED");
+    if (account.status !== "ACTIVE") return reject(400, "Repayment account is not active", "ACCOUNT_NOT_ACTIVE");
+    if (!amount) return reject(400, "Repayment amount must be positive", "INVALID_AMOUNT");
+    if (amount > loan.outstandingBalance + 0.0001) return reject(400, "Repayment exceeds outstanding balance", "AMOUNT_EXCEEDS_OUTSTANDING");
+    if (account.balance < amount) return reject(400, "Insufficient funds in repayment account", "INSUFFICIENT_FUNDS");
+
     account.balance = Math.round((account.balance - amount) * 100) / 100;
     loan.outstandingBalance = Math.max(0, Math.round((loan.outstandingBalance - amount) * 100) / 100);
     loan.lastRepaymentAt = now();
@@ -547,9 +570,22 @@ function createApp({ freshStore = false } = {}) {
     };
     store.transactions.push(transaction);
     addNotification(loan.userId, "Loan repayment recorded", "A repayment of ₹" + amount.toFixed(2) + " was recorded.");
+
+    const response = { repayment, transaction, account: publicAccount(account), loan };
+    // Save the replay snapshot, debit and ledger records together in the demo store.
+    store.idempotencyKeys[scopedKey] = {
+      fingerprint,
+      statusCode: 201,
+      response: JSON.parse(JSON.stringify(response)),
+      createdAt: now()
+    };
     saveStore();
-    audit("LOAN_REPAYMENT_RECORDED", req.user.id, { loanId: loan.id, repaymentId: repayment.id, accountId: account.id, amount, outstandingAfter: loan.outstandingBalance });
-    return res.status(201).json({ repayment, transaction, account: publicAccount(account), loan });
+    audit("LOAN_REPAYMENT_RECORDED", req.user.id, {
+      loanId: loan.id, repaymentId: repayment.id, accountId: account.id, amount,
+      outstandingAfter: loan.outstandingBalance,
+      idempotencyKeyHash: crypto.createHash("sha256").update(idempotencyKey).digest("hex")
+    });
+    return res.status(201).json(response);
   });
 
   app.get("/api/transactions", authRequired, (req, res) => {
