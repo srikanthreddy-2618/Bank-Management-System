@@ -113,6 +113,7 @@ function seedStore() {
       }
     ],
     beneficiaries: [],
+    loans: [],
     transactions: [],
     notifications: [
       {
@@ -361,6 +362,113 @@ function createApp({ freshStore = false } = {}) {
     res.json({ account: publicAccount(account) });
   });
 
+  app.post("/api/loans", authRequired, (req, res) => {
+    if (req.user.role !== "CUSTOMER") return res.status(403).json({ error: "Only customers can apply for loans" });
+    const requestedAmount = positiveAmount(req.body?.amount);
+    const purpose = typeof req.body?.purpose === "string" ? req.body.purpose.trim() : "";
+    const tenureMonths = Number(req.body?.tenureMonths);
+    if (!requestedAmount) return res.status(400).json({ error: "Loan amount must be positive" });
+    if (!Number.isInteger(tenureMonths) || tenureMonths < 1 || tenureMonths > 360) {
+      return res.status(400).json({ error: "Tenure must be between 1 and 360 months" });
+    }
+    if (purpose.length < 5 || purpose.length > 240) {
+      return res.status(400).json({ error: "Purpose must be between 5 and 240 characters" });
+    }
+    const loan = {
+      id: id("loan-"),
+      userId: req.user.id,
+      amount: requestedAmount,
+      purpose,
+      tenureMonths,
+      status: "PENDING",
+      repaymentAmount: null,
+      outstandingBalance: null,
+      submittedAt: now(),
+      decisionAt: null
+    };
+    store.loans.push(loan);
+    addNotification(req.user.id, "Loan application submitted", "Your application for ₹" + requestedAmount.toFixed(2) + " is pending review.");
+    saveStore();
+    audit("LOAN_APPLICATION_SUBMITTED", req.user.id, { loanId: loan.id, amount: requestedAmount, tenureMonths });
+    return res.status(201).json({ loan });
+  });
+
+  app.get("/api/loans", authRequired, (req, res) => {
+    const loans = (store.loans || []).filter(loan => req.user.role === "STAFF" || loan.userId === req.user.id);
+    return res.json({ loans: loans.slice().sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)) });
+  });
+
+  app.get("/api/loans/:id", authRequired, (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (req.user.role !== "STAFF" && loan.userId !== req.user.id) return res.status(403).json({ error: "Unauthorized loan" });
+    return res.json({ loan });
+  });
+
+  app.patch("/api/loans/:id/decision", authRequired, requireRole("STAFF"), (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (loan.status !== "PENDING") return res.status(409).json({ error: "Only pending applications can be decided" });
+    const decision = req.body?.decision;
+    if (decision !== "APPROVED" && decision !== "REJECTED") return res.status(400).json({ error: "Decision must be APPROVED or REJECTED" });
+    let repaymentAmount = null;
+    let outstandingBalance = null;
+    if (decision === "APPROVED") {
+      const annualRatePercent = Number(req.body?.annualRatePercent ?? 0);
+      if (!Number.isFinite(annualRatePercent) || annualRatePercent < 0 || annualRatePercent > 100) {
+        return res.status(400).json({ error: "Annual rate must be between 0 and 100 percent" });
+      }
+      const monthlyRate = annualRatePercent / 1200;
+      const payment = monthlyRate === 0
+        ? loan.amount / loan.tenureMonths
+        : loan.amount * monthlyRate / (1 - Math.pow(1 + monthlyRate, -loan.tenureMonths));
+      repaymentAmount = Math.round(payment * 100) / 100;
+      outstandingBalance = loan.amount;
+    }
+    loan.status = decision;
+    loan.annualRatePercent = decision === "APPROVED" ? Number(req.body?.annualRatePercent ?? 0) : null;
+    loan.repaymentAmount = repaymentAmount;
+    loan.outstandingBalance = outstandingBalance;
+    loan.decisionAt = now();
+    addNotification(loan.userId, "Loan application " + decision.toLowerCase(), decision === "APPROVED"
+      ? "Your loan was approved. Monthly repayment is ₹" + repaymentAmount.toFixed(2) + "."
+      : "Your loan application was rejected.");
+    saveStore();
+    audit("LOAN_APPLICATION_DECIDED", req.user.id, { loanId: loan.id, decision, repaymentAmount });
+    return res.json({ loan });
+  });
+
+  app.post("/api/loans/:id/repayments", authRequired, (req, res) => {
+    const loan = (store.loans || []).find(item => item.id === req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+    if (loan.userId !== req.user.id && req.user.role !== "STAFF") return res.status(403).json({ error: "Unauthorized loan" });
+    if (loan.status !== "APPROVED" || loan.outstandingBalance === null) {
+      return res.status(400).json({ error: "Only approved loans can be repaid" });
+    }
+    const amount = positiveAmount(req.body?.amount);
+    if (!amount) return res.status(400).json({ error: "Repayment amount must be positive" });
+    if (amount > loan.outstandingBalance + 0.0001) {
+      return res.status(400).json({ error: "Repayment exceeds outstanding balance" });
+    }
+    loan.outstandingBalance = Math.max(0, Math.round((loan.outstandingBalance - amount) * 100) / 100);
+    loan.lastRepaymentAt = now();
+    if (loan.outstandingBalance === 0) loan.status = "PAID";
+    const repayment = {
+      id: id("repay-"),
+      loanId: loan.id,
+      userId: loan.userId,
+      amount,
+      outstandingAfter: loan.outstandingBalance,
+      createdAt: now()
+    };
+    if (!Array.isArray(loan.repayments)) loan.repayments = [];
+    loan.repayments.push(repayment);
+    addNotification(loan.userId, "Loan repayment recorded", "A repayment of ₹" + amount.toFixed(2) + " was recorded.");
+    saveStore();
+    audit("LOAN_REPAYMENT_RECORDED", req.user.id, { loanId: loan.id, repaymentId: repayment.id, amount, outstandingAfter: loan.outstandingBalance });
+    return res.status(201).json({ repayment, loan });
+  });
+
   app.get("/api/transactions", authRequired, (req, res) => {
     const accountId = req.query.accountId;
     const accounts = store.accounts.filter(a => req.user.role === "STAFF" ? true : a.userId === req.user.id);
@@ -542,6 +650,54 @@ function createApp({ freshStore = false } = {}) {
 
   app.get("/api/notifications", authRequired, (req, res) => {
     res.json({ notifications: store.notifications.filter(n => n.userId === req.user.id) });
+  });
+
+  app.get("/api/admin/reports/summary", authRequired, requireRole("STAFF"), (req, res) => {
+    const accounts = store.accounts || [];
+    const transactions = store.transactions || [];
+    const loans = store.loans || [];
+    const auditLogs = store.auditLogs || [];
+    const deposits = transactions.filter(t => t.type === "DEPOSIT" && t.status === "SUCCESS");
+    const withdrawals = transactions.filter(t => t.type === "WITHDRAWAL" && t.status === "SUCCESS");
+    const transfersOut = transactions.filter(t => t.type === "TRANSFER_OUT" && t.status === "SUCCESS");
+    const sum = (items) => Math.round(items.reduce((total, item) => total + Number(item.amount || 0), 0) * 100) / 100;
+    const byType = {};
+    for (const transaction of transactions) {
+      const key = transaction.type || "UNKNOWN";
+      byType[key] = (byType[key] || 0) + 1;
+    }
+    const generatedAt = now();
+    audit("OPERATIONAL_REPORT_GENERATED", req.user.id, { report: "SUMMARY", generatedAt });
+    return res.json({
+      generatedAt,
+      scope: "CURRENT_LOCAL_DEMO_STORE",
+      accounts: {
+        total: accounts.length,
+        active: accounts.filter(a => a.status === "ACTIVE").length,
+        frozen: accounts.filter(a => a.status === "FROZEN").length,
+        closed: accounts.filter(a => a.status === "CLOSED").length,
+        totalBalance: Math.round(accounts.reduce((total, account) => total + Number(account.balance || 0), 0) * 100) / 100
+      },
+      transactions: {
+        total: transactions.length,
+        deposits: deposits.length,
+        depositAmount: sum(deposits),
+        withdrawals: withdrawals.length,
+        withdrawalAmount: sum(withdrawals),
+        transfersOut: transfersOut.length,
+        transferOutAmount: sum(transfersOut),
+        countByType: byType
+      },
+      loans: {
+        total: loans.length,
+        pending: loans.filter(loan => loan.status === "PENDING").length,
+        approved: loans.filter(loan => loan.status === "APPROVED").length,
+        rejected: loans.filter(loan => loan.status === "REJECTED").length,
+        paid: loans.filter(loan => loan.status === "PAID").length,
+        outstandingBalance: Math.round(loans.reduce((total, loan) => total + Number(loan.outstandingBalance || 0), 0) * 100) / 100
+      },
+      auditEvents: auditLogs.length
+    });
   });
 
   app.get("/api/admin/audit", authRequired, requireRole("STAFF"), (_req, res) => {
