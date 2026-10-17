@@ -7,7 +7,7 @@ process.env.BMS_DEMO_MODE = "true";
 const { createApp } = require("../backend/server");
 
 async function start(t) {
-  const app = createApp();
+  const app = createApp({ freshStore: true });
   const server = await new Promise(resolve => {
     const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
   });
