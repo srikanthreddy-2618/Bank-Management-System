@@ -90,6 +90,32 @@
         </div>
       </section>
 
+      <section class="panel" id="loansPanel">
+        <div class="section-head"><h3>Loans</h3><button id="refreshLoansBtn" class="secondary" type="button">Refresh loans</button></div>
+        <form id="loanApplicationForm">
+          <h4>Apply for a loan</h4>
+          <div class="grid">
+            <label>Requested amount (₹)<input id="loanAmount" type="number" min="1" step="0.01" required></label>
+            <label>Repayment tenure (months)<input id="loanTenure" type="number" min="1" max="360" step="1" value="12" required></label>
+          </div>
+          <label>Purpose<textarea id="loanPurpose" minlength="5" maxlength="240" required></textarea></label>
+          <button type="submit">Submit loan application</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Submitted</th><th>Requested (₹)</th><th>Tenure</th><th>Purpose / ID</th><th>Status</th><th>Monthly payment (₹)</th><th>Outstanding (₹)</th><th>Action</th></tr></thead>
+            <tbody id="loansBody"><tr><td colspan="8">Loading loans…</td></tr></tbody>
+          </table>
+        </div>
+        <p id="loansMessage" class="message" aria-live="polite"></p>
+      </section>
+
+      <section class="panel hidden" id="operationalReportsPanel">
+        <div class="section-head"><h3>Operational Reports (Staff)</h3><button id="refreshReportBtn" class="secondary" type="button">Refresh report</button></div>
+        <p class="muted">Aggregated metrics from the current local demo store.</p>
+        <pre id="operationalReportOutput" class="report-output">Report not loaded.</pre>
+      </section>
+
       <section class="panel">
         <h3>Profile</h3>
         <form id="profileForm" class="inline-form">

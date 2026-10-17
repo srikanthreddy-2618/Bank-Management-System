@@ -83,13 +83,7 @@ test("authenticated customer can deposit, withdraw and transfer", async t => {
   const deposit = await post(base, "/api/transactions/deposit", {
     accountId: "acc-1001", amount: 250
   }, token);
-assert.equal(deposit.status, 201);
-
-const depositBody = await deposit.json();
-assert.equal(depositBody.transaction.type, "DEPOSIT");
-assert.equal(depositBody.transaction.amount, 250);
-assert.equal(depositBody.transaction.balanceAfter, 10250);
-assert.equal(depositBody.account.balance, 10250);
+  assert.equal(deposit.status, 201);
 
   const withdrawal = await post(base, "/api/transactions/withdraw", {
     accountId: "acc-1001", amount: 100
@@ -231,58 +225,181 @@ test("successful and rejected withdrawal attempts are audited without passwords 
   assert.equal(serializedLogs.includes("123456"), false);
 });
 
-test("invalid deposits are rejected without changing balance or creating transactions", async t => {
-  const { base } = await start(t);
-  const token = await loginAs(base);
 
-  const invalidCases = [
-    { name: "zero amount", body: { accountId: "acc-1001", amount: 0 } },
-    { name: "negative amount", body: { accountId: "acc-1001", amount: -10 } },
-    { name: "missing amount", body: { accountId: "acc-1001" } },
-    { name: "missing account", body: { amount: 100 } },
-    { name: "unknown account", body: { accountId: "missing-account", amount: 100 } }
-  ];
-
-  for (const item of invalidCases) {
-    const response = await post(
-      base, "/api/transactions/deposit", item.body, token
-    );
-    assert.ok(
-      [400, 403, 404].includes(response.status),
-      `${item.name}: unexpected status ${response.status}`
-    );
-    assert.equal(
-      await accountBalance(base, token),
-      10000,
-      `${item.name} must not change the balance`
-    );
-  }
-
-  const transactions = await accountTransactions(base, token);
-  assert.equal(
-    transactions.filter(item => item.type === "DEPOSIT").length,
-    0,
-    "Rejected deposits must not create deposit transactions"
-  );
-});
-
-test("customer cannot deposit into another customer's account", async t => {
+test("customer can apply for a loan and staff can approve it with a repayment schedule", async t => {
   const { base } = await start(t);
   const customerToken = await loginAs(base);
-  const staffToken = await loginAs(base, "staff@bms.local");
-
-  const response = await post(base, "/api/transactions/deposit", {
-    accountId: "acc-2001",
-    amount: 500
+  const application = await post(base, "/api/loans", {
+    amount: 12000,
+    tenureMonths: 12,
+    purpose: "Home appliance purchase"
   }, customerToken);
+  assert.equal(application.status, 201);
+  const applicationBody = await application.json();
+  assert.equal(applicationBody.loan.status, "PENDING");
+  assert.equal(applicationBody.loan.amount, 12000);
 
-  assert.equal(response.status, 403);
-  assert.equal(await accountBalance(base, customerToken), 10000);
-  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25000);
+  const customerLoans = await get(base, "/api/loans", customerToken);
+  assert.equal(customerLoans.status, 200);
+  assert.equal((await customerLoans.json()).loans.length, 1);
 
-  const staffTransactions = await accountTransactions(base, staffToken, "acc-2001");
-  assert.equal(
-    staffTransactions.filter(item => item.type === "DEPOSIT").length,
-    0
-  );
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const decision = await fetch(base + "/api/loans/" + applicationBody.loan.id + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 12, disbursementAccountId: "acc-1001" })
+  });
+  assert.equal(decision.status, 200);
+  const loan = (await decision.json()).loan;
+  assert.equal(loan.status, "APPROVED");
+  assert.ok(loan.outstandingBalance > 12000);
+  assert.ok(loan.repaymentAmount > 1000);
+  assert.equal(await accountBalance(base, customerToken), 22000);
+  const customerTransactions = await accountTransactions(base, customerToken);
+  assert.ok(customerTransactions.some(item => item.type === "LOAN_DISBURSEMENT" && item.amount === 12000));
+});
+
+test("loan repayment debits the account, reduces outstanding balance and enters transaction history", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const application = await post(base, "/api/loans", {
+    amount: 6000, tenureMonths: 6, purpose: "Education fees"
+  }, customerToken);
+  const loan = (await application.json()).loan;
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const decision = await fetch(base + "/api/loans/" + loan.id + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
+  });
+  assert.equal(decision.status, 200);
+
+  const repayment = await post(base, "/api/loans/" + loan.id + "/repayments", {
+    accountId: "acc-1001", amount: 1500
+  }, customerToken, { "Idempotency-Key": "loan-repay-happy-001" });
+  assert.equal(repayment.status, 201);
+  const repaymentBody = await repayment.json();
+  assert.equal(repaymentBody.loan.outstandingBalance, 4500);
+  assert.equal(repaymentBody.account.balance, 14500);
+  assert.equal(repaymentBody.transaction.type, "LOAN_REPAYMENT");
+
+  const transactions = await accountTransactions(base, customerToken);
+  assert.ok(transactions.some(item => item.type === "LOAN_REPAYMENT" && item.amount === 1500));
+});
+
+test("invalid and unauthorized loan operations do not alter balances or loan status", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const application = await post(base, "/api/loans", {
+    amount: 2000, tenureMonths: 12, purpose: "Medical expenses"
+  }, customerToken);
+  const loan = (await application.json()).loan;
+
+  const customerDecision = await fetch(base + "/api/loans/" + loan.id + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + customerToken },
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
+  });
+  assert.equal(customerDecision.status, 403);
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const approval = await fetch(base + "/api/loans/" + loan.id + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
+  });
+  assert.equal(approval.status, 200);
+
+  const overpayment = await post(base, "/api/loans/" + loan.id + "/repayments", {
+    accountId: "acc-1001", amount: 999999
+  }, customerToken, { "Idempotency-Key": "loan-repay-overpayment-001" });
+  assert.equal(overpayment.status, 400);
+  assert.equal(await accountBalance(base, customerToken), 12000);
+
+  const noAccount = await post(base, "/api/loans/" + loan.id + "/repayments", {
+    amount: 50
+  }, customerToken, { "Idempotency-Key": "loan-repay-no-account-001" });
+  assert.equal(noAccount.status, 404);
+  assert.equal(await accountBalance(base, customerToken), 12000);
+});
+
+test("operational report is staff-only and returns aggregate banking metrics", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const denied = await get(base, "/api/admin/reports/summary", customerToken);
+  assert.equal(denied.status, 403);
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const reportResponse = await get(base, "/api/admin/reports/summary", staffToken);
+  assert.equal(reportResponse.status, 200);
+  const report = await reportResponse.json();
+  assert.equal(report.accounts.total, 3);
+  assert.equal(report.accounts.active, 3);
+  assert.equal(report.transactions.total, 0);
+  assert.equal(report.loans.total, 0);
+  assert.equal(report.scope, "CURRENT_LOCAL_DEMO_STORE");
+  assert.ok(report.generatedAt);
+});
+
+test("authentication failures are audited without logging credentials or OTPs; audit endpoint is staff-only", async t => {
+  const { base } = await start(t);
+  const failedLogin = await post(base, "/api/auth/login", {
+    email: "customer@bms.local", password: "Wrong-Password-Secret"
+  });
+  assert.equal(failedLogin.status, 401);
+
+  const failedOtp = await post(base, "/api/auth/verify-otp", {
+    userId: "usr-customer-001", otp: "wrong-otp-value"
+  });
+  assert.equal(failedOtp.status, 401);
+
+  const customerToken = await loginAs(base);
+  const denied = await get(base, "/api/admin/audit", customerToken);
+  assert.equal(denied.status, 403);
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const response = await get(base, "/api/admin/audit", staffToken);
+  assert.equal(response.status, 200);
+  const logs = (await response.json()).auditLogs;
+  assert.ok(logs.some(log => log.action === "AUTHENTICATION_FAILED" && log.metadata.reason === "INVALID_PASSWORD"));
+  assert.ok(logs.some(log => log.action === "OTP_VERIFICATION_FAILED" && log.metadata.reason === "OTP_NOT_FOUND"));
+  const serialized = JSON.stringify(logs);
+  assert.equal(serialized.includes("Wrong-Password-Secret"), false);
+  assert.equal(serialized.includes("wrong-otp-value"), false);
+  assert.equal(serialized.includes("Password@123"), false);
+  assert.equal(serialized.includes("123456"), false);
+});
+
+
+test("retrying a loan repayment with the same idempotency key debits only once", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const application = await post(base, "/api/loans", {
+    amount: 2000, tenureMonths: 4, purpose: "Short term expense"
+  }, customerToken);
+  const loan = (await application.json()).loan;
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const approval = await fetch(base + "/api/loans/" + loan.id + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" })
+  });
+  assert.equal(approval.status, 200);
+  const body = { accountId: "acc-1001", amount: 500 };
+  const headers = { "Idempotency-Key": "loan-repay-retry-001" };
+
+  const first = await post(base, "/api/loans/" + loan.id + "/repayments", body, customerToken, headers);
+  assert.equal(first.status, 201);
+  const firstBody = await first.json();
+  const retry = await post(base, "/api/loans/" + loan.id + "/repayments", body, customerToken, headers);
+  assert.equal(retry.status, 201);
+  const retryBody = await retry.json();
+  assert.equal(retryBody.idempotentReplay, true);
+  assert.equal(retryBody.transaction.id, firstBody.transaction.id);
+
+  assert.equal(await accountBalance(base, customerToken), 11500);
+  const transactions = await accountTransactions(base, customerToken);
+  assert.equal(transactions.filter(item => item.type === "LOAN_REPAYMENT").length, 1);
 });

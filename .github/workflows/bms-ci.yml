@@ -30,6 +30,11 @@ jobs:
       - name: Run automated tests
         run: npm test
 
+      - name: Run API performance baseline
+        env:
+          BMS_PERFORMANCE_TARGET_MS: 2000
+        run: npm run performance
+
       - name: Validate repository structure
         shell: bash
         run: |
