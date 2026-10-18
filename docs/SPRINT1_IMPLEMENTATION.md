@@ -16,7 +16,7 @@ This implementation turns the BMS documentation backlog into a runnable web appl
 | BMS-F-006 | Balance inquiry dashboard |
 | BMS-F-007 | Cash deposit with account-ownership validation, request idempotency (credit applied exactly once) and audited rejections |
 | BMS-F-008 | Cash withdrawal with amount/balance validation, request idempotency and duplicate-retry protection |
-| BMS-F-009 | Fund transfer with source/destination validation |
+| BMS-F-009 | Fund transfer with source/destination validation, per-transfer limit, request idempotency (money moves exactly once), atomic debit/credit and audited rejections |
 | BMS-F-010 | Beneficiary add/remove |
 | BMS-SR-002 | Passwords stored as salted scrypt hashes, never plaintext |
 | BMS-SR-003 | Role-aware middleware for staff-only operations |

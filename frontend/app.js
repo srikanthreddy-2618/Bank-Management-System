@@ -8,6 +8,11 @@ function readPendingDeposit() {
   catch { return null; }
 }
 
+function readPendingTransfer() {
+  try { return JSON.parse(sessionStorage.getItem("bmsPendingTransfer") || "null"); }
+  catch { return null; }
+}
+
 function readPendingLoanRepayments() {
   try { return JSON.parse(sessionStorage.getItem("bmsPendingLoanRepayments") || "{}"); }
   catch { return {}; }
@@ -22,6 +27,7 @@ const state = {
   // Kept in sessionStorage so refresh/retry after a timeout reuses the same request key.
   pendingWithdrawal: readPendingWithdrawal(),
   pendingDeposit: readPendingDeposit(),
+  pendingTransfer: readPendingTransfer(),
   pendingLoanRepayments: readPendingLoanRepayments()
 };
 const $ = id => document.getElementById(id);
@@ -279,6 +285,16 @@ function setPendingDeposit(request) {
   }
 }
 
+function setPendingTransfer(request) {
+  state.pendingTransfer = request;
+  try {
+    if (request) sessionStorage.setItem("bmsPendingTransfer", JSON.stringify(request));
+    else sessionStorage.removeItem("bmsPendingTransfer");
+  } catch {
+    // The in-memory key still protects same-page retries if session storage is unavailable.
+  }
+}
+
 async function transaction(endpoint, accountField, amountField) {
   const accountId = $(accountField).value;
   const amount = Number($(amountField).value);
@@ -355,11 +371,21 @@ $("depositForm").onsubmit = e => { e.preventDefault(); transaction("/api/transac
 $("withdrawForm").onsubmit = e => { e.preventDefault(); transaction("/api/transactions/withdraw","withdrawAccount","withdrawAmount"); };
 $("transferForm").onsubmit = async e => {
   e.preventDefault();
+  const fromAccountId = $("transferAccount").value;
+  const toAccountNumber = $("toAccount").value;
+  const amount = Number($("transferAmount").value);
+  // Reuse the same key when the same transfer is resubmitted after a timeout, so it posts only once.
+  const pending = state.pendingTransfer;
+  if (!pending || pending.fromAccountId !== fromAccountId || pending.toAccountNumber !== toAccountNumber || pending.amount !== amount) {
+    setPendingTransfer({ key: newIdempotencyKey(), fromAccountId, toAccountNumber, amount });
+  }
   try {
     await api("/api/transactions/transfer", {
       method:"POST",
-      body:JSON.stringify({ fromAccountId:$("transferAccount").value, toAccountNumber:$("toAccount").value, amount:Number($("transferAmount").value) })
+      headers:{ "Idempotency-Key": state.pendingTransfer.key },
+      body:JSON.stringify({ fromAccountId, toAccountNumber, amount })
     });
+    setPendingTransfer(null);
     $("transferAmount").value = ""; $("toAccount").value = ""; await loadDashboard(); toast("Fund transfer completed");
   } catch(e){ toast(e.message); }
 };

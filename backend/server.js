@@ -13,6 +13,8 @@ const PERSISTENCE = process.env.BMS_PERSISTENCE !== "false";
 const DATA_FILE = process.env.BMS_DATA_FILE || path.join(__dirname, "data", "db.json");
 const DEMO_MODE = process.env.BMS_DEMO_MODE !== "false";
 const OTP = process.env.BMS_DEMO_OTP || "123456";
+// Per-transfer limit. The SRS leaves the value to stakeholders, so this default is provisional.
+const TRANSFER_LIMIT = Number(process.env.BMS_TRANSFER_LIMIT) > 0 ? Number(process.env.BMS_TRANSFER_LIMIT) : 200000;
 const JWT_SECRET = process.env.BMS_JWT_SECRET || crypto.randomBytes(32).toString("hex");
 
 function now() {
@@ -735,17 +737,56 @@ function createApp({ freshStore = false } = {}) {
   });
 
   app.post("/api/transactions/transfer", authRequired, (req, res) => {
-    const source = ownedAccount(req.user, req.body?.fromAccountId);
-    if (source === undefined) return res.status(403).json({ error: "Unauthorized source account" });
-    if (!source) return res.status(404).json({ error: "Source account not found" });
-    const destination = store.accounts.find(a => a.accountNumber === String(req.body?.toAccountNumber || ""));
-    if (!destination) return res.status(404).json({ error: "Destination account not found" });
-    if (source.id === destination.id) return res.status(400).json({ error: "Source and destination accounts must differ" });
-    if (source.status !== "ACTIVE" || destination.status !== "ACTIVE") return res.status(400).json({ error: "Both accounts must be active" });
+    const fromAccountId = typeof req.body?.fromAccountId === "string" ? req.body.fromAccountId : null;
+    const toAccountNumber = String(req.body?.toAccountNumber || "");
     const amount = positiveAmount(req.body?.amount);
-    if (!amount) return res.status(400).json({ error: "Amount must be positive" });
-    if (source.balance < amount) return res.status(400).json({ error: "Insufficient balance" });
+    const idempotencyKey = String(req.get("Idempotency-Key") || "").trim();
 
+    // Require a client-generated key so a retried request can never move the money twice (BMS-F-009).
+    if (!/^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) {
+      audit("FUND_TRANSFER_REJECTED", req.user.id, { reason: "MISSING_OR_INVALID_IDEMPOTENCY_KEY" });
+      return res.status(400).json({ error: "A valid Idempotency-Key header is required for transfers" });
+    }
+
+    const fingerprint = crypto.createHash("sha256")
+      .update(JSON.stringify({ fromAccountId, toAccountNumber, amount }))
+      .digest("hex");
+    // Scope keys to the authenticated user and transfer operation.
+    const scopedKey = req.user.id + ":transfer:" + idempotencyKey;
+    const previous = store.idempotencyKeys[scopedKey];
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) {
+        audit("FUND_TRANSFER_IDEMPOTENCY_CONFLICT", req.user.id, {
+          sourceAccountId: fromAccountId, reason: "KEY_REUSED_WITH_DIFFERENT_REQUEST"
+        });
+        return res.status(409).json({ error: "Idempotency-Key was already used for a different transfer request" });
+      }
+      audit("FUND_TRANSFER_IDEMPOTENT_REPLAY", req.user.id, {
+        sourceAccountId: fromAccountId, transactionId: previous.response.transaction.id
+      });
+      return res.status(previous.statusCode || 201).json({ ...previous.response, idempotentReplay: true });
+    }
+
+    const reject = (status, error, reason) => {
+      const metadata = { reason };
+      if (fromAccountId && fromAccountId.length <= 40) metadata.sourceAccountId = fromAccountId;
+      audit("FUND_TRANSFER_REJECTED", req.user.id, metadata);
+      return res.status(status).json({ error });
+    };
+
+    const source = ownedAccount(req.user, fromAccountId);
+    if (source === undefined) return reject(403, "Unauthorized source account", "UNAUTHORIZED_ACCOUNT");
+    if (!source) return reject(404, "Source account not found", "SOURCE_NOT_FOUND");
+    const destination = store.accounts.find(a => a.accountNumber === toAccountNumber);
+    if (!destination) return reject(404, "Destination account not found", "DESTINATION_NOT_FOUND");
+    if (source.id === destination.id) return reject(400, "Source and destination accounts must differ", "SAME_ACCOUNT");
+    if (source.status !== "ACTIVE" || destination.status !== "ACTIVE") return reject(400, "Both accounts must be active", "ACCOUNT_NOT_ACTIVE");
+    if (!amount) return reject(400, "Amount must be positive", "INVALID_AMOUNT");
+    if (amount > TRANSFER_LIMIT) return reject(400, "Amount exceeds the per-transfer limit of ₹" + TRANSFER_LIMIT.toFixed(2), "TRANSFER_LIMIT_EXCEEDED");
+    if (source.balance < amount) return reject(400, "Insufficient balance", "INSUFFICIENT_BALANCE");
+
+    // All validation is complete: apply both legs, the ledger entries and the idempotency
+    // record in one synchronous block so the transfer is all-or-nothing.
     source.balance -= amount;
     destination.balance += amount;
     const timestamp = now();
@@ -756,7 +797,7 @@ function createApp({ freshStore = false } = {}) {
       type: "TRANSFER_OUT",
       amount,
       balanceAfter: source.balance,
-      description: req.body.description || "Fund transfer",
+      description: req.body?.description || "Fund transfer",
       createdAt: timestamp,
       status: "SUCCESS"
     };
@@ -767,16 +808,22 @@ function createApp({ freshStore = false } = {}) {
       type: "TRANSFER_IN",
       amount,
       balanceAfter: destination.balance,
-      description: req.body.description || "Fund transfer received",
+      description: req.body?.description || "Fund transfer received",
       createdAt: timestamp,
       status: "SUCCESS"
     };
     store.transactions.push(outbound, inbound);
     addNotification(source.userId, "Transfer successful", `₹${amount.toFixed(2)} was transferred to ${destination.accountNumber}.`);
     addNotification(destination.userId, "Transfer received", `₹${amount.toFixed(2)} was received from account ${source.accountNumber}.`);
+
+    const response = { transaction: outbound, account: publicAccount(source) };
+    store.idempotencyKeys[scopedKey] = { fingerprint, statusCode: 201, response, createdAt: now() };
     saveStore();
-    audit("FUND_TRANSFER", req.user.id, { sourceAccountId: source.id, destinationAccountId: destination.id, amount });
-    res.status(201).json({ transaction: outbound, account: publicAccount(source) });
+    audit("FUND_TRANSFER", req.user.id, {
+      sourceAccountId: source.id, destinationAccountId: destination.id, amount, transactionId: outbound.id,
+      idempotencyKeyHash: crypto.createHash("sha256").update(idempotencyKey).digest("hex")
+    });
+    return res.status(201).json(response);
   });
 
   app.get("/api/beneficiaries", authRequired, (req, res) => {
