@@ -7,35 +7,36 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to main content</a>
   <header class="topbar">
     <div>
-      <h1>🏦 Bank Management System</h1>
-      <p>Secure banking operations — Sprint 1</p>
+      <h1><span aria-hidden="true">🏦</span> Bank Management System</h1>
+      <p>Secure banking operations</p>
     </div>
-    <button id="logoutBtn" class="secondary hidden">Logout</button>
+    <button id="logoutBtn" type="button" class="secondary hidden">Logout</button>
   </header>
 
-  <main>
+  <main id="main" tabindex="-1">
     <section id="loginView" class="panel auth-panel">
       <h2>Secure Login</h2>
       <p class="muted">Demo account: <b>customer@bms.local</b> / <b>Password@123</b></p>
       <form id="loginForm">
-        <label>Email<input id="email" type="email" required value="customer@bms.local"></label>
-        <label>Password<input id="password" type="password" required value="Password@123"></label>
+        <label>Email<input id="email" type="email" autocomplete="username" required value="customer@bms.local"></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" required value="Password@123"></label>
         <button type="submit">Continue to OTP</button>
       </form>
       <form id="otpForm" class="hidden">
-        <label>OTP<input id="otp" inputmode="numeric" maxlength="6" required></label>
-        <p id="otpHint" class="muted"></p>
+        <label>OTP<input id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+        <p id="otpHint" class="muted" aria-live="polite"></p>
         <button type="submit">Verify OTP & Login</button>
       </form>
-      <p id="authMessage" class="message"></p>
+      <p id="authMessage" class="message" role="alert"></p>
     </section>
 
     <section id="dashboardView" class="hidden">
       <div class="welcome">
-        <div><h2 id="welcomeName">Dashboard</h2><p id="roleText" class="muted"></p></div>
-        <div id="apiStatus" class="status">Checking API…</div>
+        <div><h2 id="welcomeName" tabindex="-1">Dashboard</h2><p id="roleText" class="muted"></p></div>
+        <div id="apiStatus" class="status" role="status">Checking API…</div>
       </div>
 
       <div id="accountCards" class="cards"></div>
@@ -63,7 +64,7 @@
           <h3>Fund Transfer</h3>
           <form id="transferForm">
             <label>From account<select id="transferAccount"></select></label>
-            <label>Beneficiary account number<input id="toAccount" required placeholder="1000002001"></label>
+            <label>Beneficiary account number<input id="toAccount" required inputmode="numeric" autocomplete="off" placeholder="1000002001"></label>
             <label>Amount (₹)<input id="transferAmount" type="number" min="1" step="0.01" required></label>
             <button type="submit">Transfer</button>
           </form>
@@ -73,7 +74,7 @@
           <h3>Add Beneficiary</h3>
           <form id="beneficiaryForm">
             <label>Name<input id="beneficiaryName" required></label>
-            <label>Account number<input id="beneficiaryAccount" required></label>
+            <label>Account number<input id="beneficiaryAccount" required inputmode="numeric" autocomplete="off"></label>
             <button type="submit">Add Beneficiary</button>
           </form>
           <div id="beneficiaryList" class="list"></div>
@@ -81,7 +82,7 @@
       </div>
 
       <section class="panel">
-        <div class="section-head"><h3>Transaction History</h3><button id="refreshBtn" class="secondary">Refresh</button></div>
+        <div class="section-head"><h3>Transaction History</h3><button id="refreshBtn" type="button" class="secondary">Refresh</button></div>
         <form id="historyFilterForm" class="history-filter">
           <label>Account<select id="historyAccount"></select></label>
           <label>From<input id="historyFrom" type="date"></label>
@@ -89,9 +90,10 @@
           <button type="submit">Apply</button>
           <button type="button" id="historyClear" class="secondary">Clear</button>
         </form>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Transaction history table">
           <table>
-            <thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Amount</th><th>Status</th><th>Description</th></tr></thead>
+            <caption class="sr-only">Transaction history for the selected account and dates</caption>
+            <thead><tr><th scope="col">Date</th><th scope="col">Account</th><th scope="col">Type</th><th scope="col">Amount</th><th scope="col">Status</th><th scope="col">Description</th></tr></thead>
             <tbody id="transactionBody"></tbody>
           </table>
         </div>
@@ -105,12 +107,14 @@
             <label>Requested amount (₹)<input id="loanAmount" type="number" min="1" step="0.01" required></label>
             <label>Repayment tenure (months)<input id="loanTenure" type="number" min="1" max="360" step="1" value="12" required></label>
           </div>
-          <label>Purpose<textarea id="loanPurpose" minlength="5" maxlength="240" required></textarea></label>
+          <label>Purpose<textarea id="loanPurpose" minlength="5" maxlength="240" required aria-describedby="loanPurposeHint"></textarea></label>
+          <p id="loanPurposeHint" class="muted">Between 5 and 240 characters.</p>
           <button type="submit">Submit loan application</button>
         </form>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Loan applications table">
           <table>
-            <thead><tr><th>Submitted</th><th>Requested (₹)</th><th>Tenure</th><th>Purpose / ID</th><th>Status</th><th>Monthly payment (₹)</th><th>Outstanding (₹)</th><th>Action</th></tr></thead>
+            <caption class="sr-only">Loan applications and their status</caption>
+            <thead><tr><th scope="col">Submitted</th><th scope="col">Requested (₹)</th><th scope="col">Tenure</th><th scope="col">Purpose / ID</th><th scope="col">Status</th><th scope="col">Monthly payment (₹)</th><th scope="col">Outstanding (₹)</th><th scope="col">Action</th></tr></thead>
             <tbody id="loansBody"><tr><td colspan="8">Loading loans…</td></tr></tbody>
           </table>
         </div>
@@ -131,9 +135,10 @@
           <button id="auditIntegrityBtn" class="secondary" type="button">Check retention &amp; integrity</button>
         </div>
         <p id="auditSummary" class="muted" aria-live="polite">Audit trail not loaded.</p>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Audit trail table">
           <table>
-            <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Result</th><th>Details</th></tr></thead>
+            <caption class="sr-only">Audit trail records</caption>
+            <thead><tr><th scope="col">Time</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Result</th><th scope="col">Details</th></tr></thead>
             <tbody id="auditBody"></tbody>
           </table>
         </div>
@@ -148,13 +153,14 @@
       <section class="panel">
         <h3>Profile</h3>
         <form id="profileForm" class="inline-form">
-          <label>Name<input id="profileName" required></label>
-          <label>Phone<input id="profilePhone" required></label>
+          <label>Name<input id="profileName" autocomplete="name" required></label>
+          <label>Phone<input id="profilePhone" type="tel" autocomplete="tel" required></label>
           <button type="submit">Save Profile</button>
         </form>
       </section>
     </section>
-    <div id="toast" class="toast"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="errorToast" class="toast error" role="alert" aria-atomic="true"></div>
   </main>
 
   <script src="/app.js"></script>

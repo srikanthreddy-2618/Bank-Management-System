@@ -35,6 +35,7 @@ Sprint 1 now has a runnable web application covering the primary customer bankin
 - Secure audit events for authentication and financial operations, with sensitive metadata filtered
 - Performance baseline benchmark for health, accounts and reports
 - Audit logging without passwords/OTP values
+- Accessible UI: skip link, labelled controls, announced errors, keyboard-reachable tables and WCAG AA contrast (checklist in `docs/UX_ACCESSIBILITY_CHECKLIST.md`)
 - Hash-chained audit records with a configurable retention period, integrity verification and explicit, audited purge of expired records
 
 The application is intentionally scoped for the academic sprint demo. SMS/email OTP delivery and production MySQL integration are identified as follow-up work.

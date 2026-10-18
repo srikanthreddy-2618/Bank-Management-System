@@ -104,3 +104,12 @@ The API test suite includes loan application/approval, repayment balance and tra
 - `POST /api/admin/audit/retention/purge` (staff only, body `{ "confirm": true }`) removes only the oldest records that are past the retention period. Nothing is ever deleted automatically or inside the period. The newest removed record becomes the chain anchor so the retained chain still verifies, and the purge is audited (`AUDIT_RETENTION_PURGED`, with the number removed).
 - Retrieved records include `prevHash` and `hash` so an auditor can check them independently. The Audit Trail panel has a "Check retention & integrity" button.
 - The store is still the single-process JSON demo store; a deployed system would add write-once or off-host storage so the chain cannot be rewritten wholesale.
+
+## Usability and accessibility — BMS-NF-005 / Issue #44
+
+- Navigation: a "Skip to main content" link, a focusable main landmark, and focus moved to the OTP field after the password step and to the welcome heading after login. A visible `:focus-visible` ring is defined for every control.
+- Labels and input purpose: every control has a programmatic label; login, OTP and profile fields declare `autocomplete`; phone uses `type="tel"`; the loan purpose has a described length hint; each Remove button names its beneficiary; the decorative emoji is hidden from screen readers.
+- Feedback and validation: login errors are announced (`role="alert"`). Operation errors use a separate alert toast ("Error: ...") that stays for 8 seconds; success messages use a polite status toast. Previously every message vanished after under 3 seconds and none were announced.
+- Tables: captions, `scope="col"` headers, and scrollable regions that are named and reachable by keyboard.
+- Contrast: form borders raised from 1.48:1 to 3.65:1 (WCAG 1.4.11); text pairs verified at 4.5:1 or better.
+- `docs/UX_ACCESSIBILITY_CHECKLIST.md` holds the proposed TC-UX-01 checklist, the automated evidence, and the manual steps for the Test Engineer.

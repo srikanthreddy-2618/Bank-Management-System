@@ -1308,3 +1308,91 @@ test("records written before hashing existed are reported as legacy and do not b
   assert.equal(after.integrity.verified, true);
   assert.equal(after.integrity.legacyRecords, 1);
 });
+
+// ---- BMS-NF-005 / issue #44: usability and accessibility (static checks of the shipped front end) ----
+
+const fs = require("node:fs");
+const path = require("node:path");
+const frontendFile = name => fs.readFileSync(path.join(__dirname, "..", "frontend", name), "utf8");
+
+function relativeLuminance(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(a, b) {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test("page basics: language, zoomable viewport, skip link, focusable main landmark, no stale text", () => {
+  const html = frontendFile("index.html");
+  assert.match(html, /<html lang="en">/);
+  const viewport = html.match(/<meta name="viewport" content="([^"]*)"/)[1];
+  assert.equal(/user-scalable\s*=\s*no|maximum-scale\s*=\s*1(\.0)?\b/.test(viewport), false, "zoom must not be disabled");
+  assert.match(html, /<body>\s*<a class="skip-link" href="#main">/, "skip link must be the first focusable element");
+  assert.match(html, /<main id="main" tabindex="-1">/);
+  assert.match(html, /<span aria-hidden="true">🏦<\/span>/, "decorative emoji must be hidden from screen readers");
+  assert.equal(/Sprint 1/.test(html), false);
+});
+
+test("every form control has a programmatic label and login fields declare their purpose", () => {
+  const html = frontendFile("index.html");
+  const labels = [...html.matchAll(/<label\b[\s\S]*?<\/label>/g)].map(match => [match.index, match.index + match[0].length]);
+  const controls = [...html.matchAll(/<(input|select|textarea)\b[^>]*>/g)];
+  assert.ok(controls.length > 15);
+  for (const control of controls) {
+    const insideLabel = labels.some(([start, end]) => control.index > start && control.index < end);
+    const named = /aria-label(ledby)?=/.test(control[0]);
+    assert.ok(insideLabel || named, "unlabelled control: " + control[0].slice(0, 70));
+  }
+  assert.match(html, /id="email"[^>]*autocomplete="username"/);
+  assert.match(html, /id="password"[^>]*autocomplete="current-password"/);
+  assert.match(html, /id="otp"[^>]*autocomplete="one-time-code"/);
+  assert.match(html, /id="profilePhone"[^>]*type="tel"[^>]*autocomplete="tel"/);
+  assert.match(html, /id="loanPurpose"[^>]*aria-describedby="loanPurposeHint"/);
+  assert.match(html, /id="loanPurposeHint"/);
+});
+
+test("messages are announced to assistive technology and errors are visible long enough to read", () => {
+  const html = frontendFile("index.html");
+  const js = frontendFile("app.js");
+  assert.match(html, /id="authMessage"[^>]*role="alert"/);
+  assert.match(html, /id="toast"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /id="errorToast"[^>]*role="alert"/);
+  assert.match(html, /id="loansMessage"[^>]*aria-live="polite"/);
+  assert.equal(/\btoast\((e|err|error)\.message\)/.test(js), false, "errors must use toastError, not the polite success toast");
+  assert.ok(Number(js.match(/ERROR_TOAST_MS = (\d+)/)[1]) >= 6000, "error messages must stay visible for at least 6 seconds");
+});
+
+test("tables have captions and column headers, and scrollable regions are keyboard reachable and named", () => {
+  const html = frontendFile("index.html");
+  const tables = html.match(/<table>/g) || [];
+  assert.ok(tables.length >= 3);
+  assert.equal((html.match(/<caption class="sr-only">/g) || []).length, tables.length);
+  assert.equal(/<th>/.test(html), false, "every th needs a scope");
+  assert.ok(/<th scope="col">/.test(html));
+  const regions = html.match(/<div class="table-wrap"[^>]*>/g) || [];
+  assert.equal(regions.length, tables.length);
+  for (const region of regions) assert.match(region, /tabindex="0"[^>]*role="region"[^>]*aria-label="[^"]+"/);
+});
+
+test("keyboard focus is visible, form borders meet 3:1 contrast and buttons are individually named", () => {
+  const css = frontendFile("styles.css");
+  const js = frontendFile("app.js");
+  assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*3px solid/);
+  assert.equal(/outline:\s*(none|0)\s*[;}]/.test(css.replace(/main:focus,h2:focus\{outline:none\}/, "")), false, "focus outlines must not be removed");
+  const border = css.match(/input,select,textarea\{[^}]*border:1px solid (#[0-9a-fA-F]{6})/)[1];
+  assert.ok(contrastRatio(border, "#ffffff") >= 3, "input border " + border + " needs 3:1 against white");
+  assert.match(js, /aria-label="Remove beneficiary \$\{escapeHtml\(b\.name\)\}"/);
+});
+
+test("text colours meet WCAG AA contrast on their backgrounds", () => {
+  const pairs = [["#172033", "#f4f7fb"], ["#667085", "#ffffff"], ["#667085", "#f4f7fb"], ["#ffffff", "#1769aa"],
+    ["#24415f", "#e8eef6"], ["#2f6b3f", "#eaf4ed"], ["#ffffff", "#172033"], ["#ffffff", "#8a1f11"]];
+  const css = frontendFile("styles.css");
+  for (const [foreground, background] of pairs) {
+    assert.ok(css.toLowerCase().includes(foreground) || foreground === "#ffffff", foreground + " is expected to be used in styles.css");
+    assert.ok(contrastRatio(foreground, background) >= 4.5, foreground + " on " + background + " must be at least 4.5:1");
+  }
+});

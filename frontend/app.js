@@ -41,9 +41,20 @@ async function api(path, options = {}) {
   return data;
 }
 
+const SUCCESS_TOAST_MS = 4000;
+const ERROR_TOAST_MS = 8000; // errors stay long enough to be read and are announced as alerts
+let toastTimer, errorToastTimer;
+
 function toast(message) {
   const el = $("toast"); el.textContent = message; el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), 2800);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), SUCCESS_TOAST_MS);
+}
+
+function toastError(message) {
+  const el = $("errorToast"); el.textContent = "Error: " + message; el.classList.add("show");
+  clearTimeout(errorToastTimer);
+  errorToastTimer = setTimeout(() => el.classList.remove("show"), ERROR_TOAST_MS);
 }
 
 function showLogin() {
@@ -73,6 +84,7 @@ async function login(event) {
     $("otp").value = data.demoOtp || "";
     $("loginForm").classList.add("hidden");
     $("otpForm").classList.remove("hidden");
+    $("otp").focus();
   } catch (e) { $("authMessage").textContent = e.message; }
 }
 
@@ -86,6 +98,7 @@ async function verifyOtp(event) {
     state.token = data.token;
     localStorage.setItem("bmsToken", state.token);
     await loadDashboard();
+    $("welcomeName").focus();
   } catch (e) { $("authMessage").textContent = e.message; }
 }
 
@@ -158,10 +171,10 @@ async function loadBeneficiaries() {
   const data = await api("/api/beneficiaries");
   $("beneficiaryList").innerHTML = data.beneficiaries.length ? data.beneficiaries.map(b => `
     <div class="list-item"><span>${escapeHtml(b.name)}<br><small>${b.accountNumber}</small></span>
-    <button class="secondary" data-delete-beneficiary="${b.id}">Remove</button></div>`).join("") : "<p class='muted'>No beneficiaries yet.</p>";
+    <button type="button" class="secondary" data-delete-beneficiary="${b.id}" aria-label="Remove beneficiary ${escapeHtml(b.name)}">Remove</button></div>`).join("") : "<p class='muted'>No beneficiaries yet.</p>";
   document.querySelectorAll("[data-delete-beneficiary]").forEach(btn => btn.onclick = async () => {
     try { await api("/api/beneficiaries/" + btn.dataset.deleteBeneficiary, { method: "DELETE" }); await loadBeneficiaries(); toast("Beneficiary removed"); }
-    catch(e){ toast(e.message); }
+    catch(e){ toastError(e.message); }
   });
 }
 
@@ -394,7 +407,7 @@ async function transaction(endpoint, accountField, amountField) {
   } catch(e) {
     // Keep the deposit/withdrawal key after a timeout/network error; submitting the same
     // account and amount again will safely replay the original server result.
-    toast(e.message);
+    toastError(e.message);
   }
 }
 
@@ -449,45 +462,45 @@ $("transferForm").onsubmit = async e => {
     });
     setPendingTransfer(null);
     $("transferAmount").value = ""; $("toAccount").value = ""; await loadDashboard(); toast("Fund transfer completed");
-  } catch(e){ toast(e.message); }
+  } catch(e){ toastError(e.message); }
 };
 $("beneficiaryForm").onsubmit = async e => {
   e.preventDefault();
   try {
     await api("/api/beneficiaries", { method:"POST", body:JSON.stringify({name:$("beneficiaryName").value,accountNumber:$("beneficiaryAccount").value}) });
     e.target.reset(); await loadBeneficiaries(); toast("Beneficiary added");
-  } catch(e){ toast(e.message); }
+  } catch(e){ toastError(e.message); }
 };
 $("profileForm").onsubmit = async e => {
   e.preventDefault();
   try {
     await api("/api/profile", { method:"PUT", body:JSON.stringify({name:$("profileName").value,phone:$("profilePhone").value}) });
     toast("Profile updated"); await loadDashboard();
-  } catch(e){ toast(e.message); }
+  } catch(e){ toastError(e.message); }
 };
 $("refreshBtn").onclick = loadDashboard;
 $("historyFilterForm").onsubmit = async e => {
   e.preventDefault();
   if ($("historyFrom").value && $("historyTo").value && $("historyFrom").value > $("historyTo").value) {
-    toast("The From date must not be after the To date");
+    toastError("The From date must not be after the To date");
     return;
   }
-  try { await loadTransactions(); } catch(err) { toast(err.message); }
+  try { await loadTransactions(); } catch(err) { toastError(err.message); }
 };
 $("auditIntegrityBtn").onclick = async () => {
-  try { await loadAuditRetention(); } catch(err) { toast(err.message); }
+  try { await loadAuditRetention(); } catch(err) { toastError(err.message); }
 };
 $("auditFilterForm").onsubmit = async e => {
   e.preventDefault();
   if ($("auditFrom").value && $("auditTo").value && $("auditFrom").value > $("auditTo").value) {
-    toast("The From date must not be after the To date");
+    toastError("The From date must not be after the To date");
     return;
   }
-  try { await loadAuditTrail(); } catch(err) { toast(err.message); }
+  try { await loadAuditTrail(); } catch(err) { toastError(err.message); }
 };
 $("historyClear").onclick = async () => {
   $("historyAccount").value = ""; $("historyFrom").value = ""; $("historyTo").value = "";
-  try { await loadTransactions(); } catch(err) { toast(err.message); }
+  try { await loadTransactions(); } catch(err) { toastError(err.message); }
 };
 $("logoutBtn").onclick = async () => {
   try { if (state.token) await api("/api/auth/logout", { method:"POST" }); } catch {}
