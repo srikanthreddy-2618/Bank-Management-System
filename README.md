@@ -22,7 +22,7 @@ Sprint 1 now has a runnable web application covering the primary customer bankin
 - Balance inquiry
 - Cash deposit with required idempotency keys, duplicate-retry protection and audited rejections
 - Cash withdrawal with insufficient-balance validation, required idempotency keys and duplicate-retry protection
-- Fund transfer
+- Fund transfer with required idempotency keys, per-transfer limit, atomic debit/credit and audited rejections
 - Beneficiary add/remove
 - Transaction history
 - Notifications

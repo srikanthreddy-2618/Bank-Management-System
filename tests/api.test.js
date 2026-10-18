@@ -98,7 +98,7 @@ test("authenticated customer can deposit, withdraw and transfer", async t => {
 
   const transfer = await post(base, "/api/transactions/transfer", {
     fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 500
-  }, token);
+  }, token, { "Idempotency-Key": "test-transfer-core-001" });
   assert.equal(transfer.status, 201);
 
   assert.equal(await accountBalance(base, token), 9650);
@@ -529,4 +529,171 @@ test("successful, replayed and rejected deposits are audited without passwords o
   assert.equal(serializedLogs.includes("Password@123"), false);
   assert.equal(serializedLogs.includes("123456"), false);
   assert.equal(serializedLogs.includes("test-deposit-audit-001"), false, "raw idempotency keys must not be logged");
+});
+
+// ---- BMS-F-009 / issue #28: fund transfer ----
+
+const TRANSFER = "/api/transactions/transfer";
+const countType = (list, type) => list.filter(item => item.type === type).length;
+
+async function assertBalancesUnchanged(base, customerToken, staffToken, message) {
+  assert.equal(await accountBalance(base, customerToken, "acc-1001"), 10000, message + ": acc-1001");
+  assert.equal(await accountBalance(base, customerToken, "acc-1002"), 5000, message + ": acc-1002");
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25000, message + ": acc-2001");
+}
+
+test("successful transfer debits source, credits destination and writes both ledger entries", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const response = await post(base, TRANSFER, {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 500
+  }, customerToken, { "Idempotency-Key": "test-transfer-ledger-001" });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.transaction.type, "TRANSFER_OUT");
+  assert.equal(body.transaction.balanceAfter, 9500);
+  assert.equal(body.account.balance, 9500);
+
+  assert.equal(await accountBalance(base, customerToken, "acc-1001"), 9500);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25500);
+  // Money is conserved across all three seeded accounts.
+  const total = 9500 + (await accountBalance(base, customerToken, "acc-1002")) + 25500;
+  assert.equal(total, 40000);
+
+  const outbound = await accountTransactions(base, customerToken, "acc-1001");
+  const inbound = await accountTransactions(base, staffToken, "acc-2001");
+  assert.equal(countType(outbound, "TRANSFER_OUT"), 1);
+  assert.equal(countType(inbound, "TRANSFER_IN"), 1);
+  assert.equal(inbound.find(item => item.type === "TRANSFER_IN").balanceAfter, 25500);
+});
+
+test("invalid transfers are rejected without changing any balance or creating transactions", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const cases = [
+    { name: "zero amount", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 0 } },
+    { name: "negative amount", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: -5 } },
+    { name: "missing amount", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000002001" } },
+    { name: "missing destination", status: 404, body: { fromAccountId: "acc-1001", amount: 100 } },
+    { name: "unknown destination", status: 404, body: { fromAccountId: "acc-1001", toAccountNumber: "0000000000", amount: 100 } },
+    { name: "same source and destination", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000001001", amount: 100 } },
+    { name: "unknown source", status: 404, body: { fromAccountId: "missing-account", toAccountNumber: "1000002001", amount: 100 } },
+    { name: "another customer's source account", status: 403, body: { fromAccountId: "acc-2001", toAccountNumber: "1000001001", amount: 100 } },
+    { name: "insufficient balance", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 10001 } },
+    { name: "over the transfer limit", status: 400, body: { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 200001 } }
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const response = await post(base, TRANSFER, item.body, customerToken, {
+      "Idempotency-Key": "test-transfer-invalid-" + index
+    });
+    assert.equal(response.status, item.status, item.name + ": unexpected status");
+    await assertBalancesUnchanged(base, customerToken, staffToken, item.name);
+  }
+
+  for (const [token, accountId] of [[customerToken, "acc-1001"], [customerToken, "acc-1002"], [staffToken, "acc-2001"]]) {
+    const list = await accountTransactions(base, token, accountId);
+    assert.equal(countType(list, "TRANSFER_OUT") + countType(list, "TRANSFER_IN"), 0, accountId + " must have no transfer entries");
+  }
+});
+
+test("transfer to a frozen account is rejected without moving money", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const freeze = await fetch(base + "/api/accounts/acc-2001/lifecycle", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ status: "FROZEN" })
+  });
+  assert.equal(freeze.status, 200);
+
+  const response = await post(base, TRANSFER, {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 100
+  }, customerToken, { "Idempotency-Key": "test-transfer-frozen-001" });
+  assert.equal(response.status, 400);
+  assert.equal(await accountBalance(base, customerToken, "acc-1001"), 10000);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25000);
+});
+
+test("transfer without an idempotency key is rejected without moving money", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const response = await post(base, TRANSFER, {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 100
+  }, customerToken);
+  assert.equal(response.status, 400);
+  await assertBalancesUnchanged(base, customerToken, staffToken, "missing key");
+});
+
+test("retrying the same transfer key moves the money exactly once", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const body = { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 500 };
+  const headers = { "Idempotency-Key": "test-transfer-retry-001" };
+
+  const first = await post(base, TRANSFER, body, customerToken, headers);
+  assert.equal(first.status, 201);
+  const firstBody = await first.json();
+
+  // Simulates the client retrying the same request after a timeout/lost response.
+  const retry = await post(base, TRANSFER, body, customerToken, headers);
+  assert.equal(retry.status, 201);
+  const retryBody = await retry.json();
+  assert.equal(retryBody.idempotentReplay, true);
+  assert.equal(retryBody.transaction.id, firstBody.transaction.id);
+
+  assert.equal(await accountBalance(base, customerToken, "acc-1001"), 9500);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25500);
+  assert.equal(countType(await accountTransactions(base, customerToken, "acc-1001"), "TRANSFER_OUT"), 1);
+  assert.equal(countType(await accountTransactions(base, staffToken, "acc-2001"), "TRANSFER_IN"), 1);
+});
+
+test("reusing a transfer key with a different request returns conflict", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const key = { "Idempotency-Key": "test-transfer-conflict-001" };
+  const first = await post(base, TRANSFER, {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 500
+  }, customerToken, key);
+  assert.equal(first.status, 201);
+
+  const conflict = await post(base, TRANSFER, {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 900
+  }, customerToken, key);
+  assert.equal(conflict.status, 409);
+  assert.equal(await accountBalance(base, customerToken, "acc-1001"), 9500);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25500);
+});
+
+test("successful, replayed and rejected transfers are audited without secrets or raw keys", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const body = { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 50 };
+  const headers = { "Idempotency-Key": "test-transfer-audit-001" };
+  assert.equal((await post(base, TRANSFER, body, customerToken, headers)).status, 201);
+  assert.equal((await post(base, TRANSFER, body, customerToken, headers)).status, 201);
+  assert.equal((await post(base, TRANSFER, { ...body, amount: 10001 }, customerToken, { "Idempotency-Key": "test-transfer-audit-002" })).status, 400);
+  assert.equal((await post(base, TRANSFER, { ...body, amount: 200001 }, customerToken, { "Idempotency-Key": "test-transfer-audit-003" })).status, 400);
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const auditResponse = await get(base, "/api/admin/audit", staffToken);
+  assert.equal(auditResponse.status, 200);
+  const logs = (await auditResponse.json()).auditLogs;
+  assert.ok(logs.some(log => log.action === "FUND_TRANSFER" && log.userId === "usr-customer-001"));
+  assert.ok(logs.some(log => log.action === "FUND_TRANSFER_IDEMPOTENT_REPLAY"));
+  assert.ok(logs.some(log => log.action === "FUND_TRANSFER_REJECTED" && log.metadata.reason === "INSUFFICIENT_BALANCE"));
+  assert.ok(logs.some(log => log.action === "FUND_TRANSFER_REJECTED" && log.metadata.reason === "TRANSFER_LIMIT_EXCEEDED"));
+  const serialized = JSON.stringify(logs);
+  assert.equal(serialized.includes("Password@123"), false);
+  assert.equal(serialized.includes("123456"), false);
+  assert.equal(serialized.includes("test-transfer-audit-001"), false, "raw idempotency keys must not be logged");
 });
