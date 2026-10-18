@@ -183,12 +183,19 @@ function sanitizeAuditMetadata(value) {
   return value;
 }
 
+// BMS-F-020: every audit record states its outcome. Actions that record a refused, failed, blocked or
+// conflicting attempt are FAILURE; everything else (including idempotent replays) is SUCCESS.
+function auditResult(action) {
+  return /_(REJECTED|FAILED|BLOCKED|DENIED|CONFLICT)$/.test(String(action)) ? "FAILURE" : "SUCCESS";
+}
+
 function audit(action, userId, metadata = {}) {
   store.auditLogs.push({
     id: id("aud-"),
     action,
     userId: userId || null,
     timestamp: now(),
+    result: auditResult(action),
     metadata: sanitizeAuditMetadata(metadata)
   });
   saveStore();
@@ -238,6 +245,7 @@ function authRequired(req, res, next) {
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
+      audit("ACCESS_DENIED", req.user.id, { method: req.method, path: String(req.originalUrl || req.url).split("?")[0], role: req.user.role });
       return res.status(403).json({ error: "Insufficient privileges" });
     }
     next();
@@ -957,12 +965,45 @@ function createApp({ freshStore = false } = {}) {
     });
   });
 
-  app.get("/api/admin/audit", authRequired, requireRole("STAFF"), (_req, res) => {
-    res.json({
-      auditLogs: store.auditLogs.slice().sort((a,b) => b.timestamp.localeCompare(a.timestamp)).map(log => ({
-        id: log.id, action: log.action, userId: log.userId, timestamp: log.timestamp, metadata: log.metadata
-      }))
+  app.get("/api/admin/audit", authRequired, requireRole("STAFF"), (req, res) => {
+    const query = req.query;
+    const text = (value, pattern) => value === undefined ? { value: null } : (typeof value === "string" && pattern.test(value) ? { value } : { error: true });
+    const whole = (value, min, max, fallback) => {
+      if (value === undefined) return { value: fallback };
+      if (typeof value !== "string" || !/^\d{1,6}$/.test(value)) return { error: true };
+      const number = Number(value);
+      return number < min || number > max ? { error: true } : { value: number };
+    };
+    const userId = text(query.userId, /^[A-Za-z0-9._:-]{1,64}$/);
+    const action = text(query.action, /^[A-Z][A-Z_]{0,63}$/);
+    const result = text(query.result, /^(SUCCESS|FAILURE)$/);
+    const from = parseHistoryBoundary(query.from, false);
+    const to = parseHistoryBoundary(query.to, true);
+    const limit = whole(query.limit, 1, 1000, 500);
+    const offset = whole(query.offset, 0, 1000000, 0);
+    if ([userId, action, result, from, to, limit, offset].some(item => item.error)) {
+      return res.status(400).json({ error: "Invalid audit filter. Use userId, action (UPPER_CASE), result (SUCCESS or FAILURE), from/to (ISO dates), limit (1-1000) and offset." });
+    }
+    if (from.value !== null && to.value !== null && from.value > to.value) {
+      return res.status(400).json({ error: "from must not be after to" });
+    }
+
+    const matching = store.auditLogs
+      .map(log => ({ id: log.id, action: log.action, userId: log.userId, timestamp: log.timestamp, result: log.result || auditResult(log.action), metadata: log.metadata }))
+      .filter(log => (userId.value === null || log.userId === userId.value)
+        && (action.value === null || log.action === action.value)
+        && (result.value === null || log.result === result.value)
+        && (from.value === null || Date.parse(log.timestamp) >= from.value)
+        && (to.value === null || Date.parse(log.timestamp) <= to.value))
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const page = matching.slice(offset.value, offset.value + limit.value);
+
+    // Reading the audit trail is itself a security-sensitive action.
+    audit("AUDIT_LOG_VIEWED", req.user.id, {
+      filters: { userId: userId.value, action: action.value, result: result.value, from: query.from || null, to: query.to || null },
+      returned: page.length
     });
+    res.json({ auditLogs: page, total: matching.length, limit: limit.value, offset: offset.value });
   });
 
   app.use(express.static(path.join(__dirname, "..", "frontend")));

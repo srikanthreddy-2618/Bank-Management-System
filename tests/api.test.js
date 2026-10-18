@@ -964,3 +964,160 @@ test("the operational report counts returned loans separately", async t => {
   assert.equal(report.loans.returned, 1);
   assert.equal(report.loans.pending, 0);
 });
+
+// ---- BMS-F-020 / issue #39: audit trail ----
+
+async function auditQuery(base, token, query = "") {
+  const response = await get(base, "/api/admin/audit" + query, token);
+  return { status: response.status, body: await response.json() };
+}
+
+async function generateAuditActivity(base, customerToken, staffToken) {
+  const key = suffix => ({ "Idempotency-Key": "test-audit-" + suffix });
+  await post(base, "/api/auth/login", { email: "customer@bms.local", password: "WrongPass-Not-Real-1" });
+  await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 100 }, customerToken, key("dep-ok-001"));
+  await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 100 }, customerToken, key("dep-ok-001"));
+  await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 999 }, customerToken, key("dep-ok-001"));
+  await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 0 }, customerToken, key("dep-bad-002"));
+  await post(base, "/api/transactions/withdraw", { accountId: "acc-1001", amount: 50 }, customerToken, key("wd-ok-001"));
+  await post(base, "/api/transactions/transfer", { fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 25 }, customerToken, key("tr-ok-001"));
+  const loan = await applyForLoan(base, customerToken, 1000);
+  await decideLoan(base, staffToken, loan.id, { decision: "REJECTED", reason: "Audit test rejection" });
+  await fetch(base + "/api/accounts/acc-1002/lifecycle", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify({ status: "FROZEN" })
+  });
+  await get(base, "/api/admin/audit", customerToken); // forbidden for customers
+}
+
+test("every audit record has user, timestamp, action and a SUCCESS or FAILURE result", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await generateAuditActivity(base, customerToken, staffToken);
+
+  const { status, body } = await auditQuery(base, staffToken);
+  assert.equal(status, 200);
+  assert.ok(body.auditLogs.length > 10);
+  for (const log of body.auditLogs) {
+    assert.match(log.id, /^aud-/);
+    assert.equal(typeof log.action, "string");
+    assert.ok(!Number.isNaN(Date.parse(log.timestamp)), "valid timestamp");
+    assert.ok(["SUCCESS", "FAILURE"].includes(log.result), log.action + " must have a result");
+    assert.ok(log.userId === null || typeof log.userId === "string");
+  }
+  // Records of authenticated financial operations always name the acting user.
+  for (const log of body.auditLogs.filter(item => /^(CASH_|FUND_TRANSFER|LOAN_)/.test(item.action))) {
+    assert.ok(log.userId, log.action + " must record the user");
+  }
+});
+
+test("audit results distinguish successful operations from refused or failed attempts", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await generateAuditActivity(base, customerToken, staffToken);
+  const logs = (await auditQuery(base, staffToken)).body.auditLogs;
+  const resultOf = action => [...new Set(logs.filter(log => log.action === action).map(log => log.result))];
+
+  for (const action of ["CASH_DEPOSIT", "CASH_WITHDRAWAL", "FUND_TRANSFER", "LOAN_APPLICATION_SUBMITTED", "LOAN_APPLICATION_DECIDED",
+    "ACCOUNT_LIFECYCLE_CHANGED", "OTP_VERIFIED", "AUTHENTICATION_SUCCESS_PASSWORD", "CASH_DEPOSIT_IDEMPOTENT_REPLAY"]) {
+    assert.deepEqual(resultOf(action), ["SUCCESS"], action);
+  }
+  for (const action of ["CASH_DEPOSIT_REJECTED", "CASH_DEPOSIT_IDEMPOTENCY_CONFLICT", "AUTHENTICATION_FAILED", "ACCESS_DENIED"]) {
+    assert.deepEqual(resultOf(action), ["FAILURE"], action);
+  }
+});
+
+test("required security and financial events are recorded, and denied access is audited", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await generateAuditActivity(base, customerToken, staffToken);
+  const logs = (await auditQuery(base, staffToken)).body.auditLogs;
+  const actions = new Set(logs.map(log => log.action));
+  for (const required of ["AUTHENTICATION_SUCCESS_PASSWORD", "AUTHENTICATION_FAILED", "OTP_VERIFIED", "CASH_DEPOSIT", "CASH_WITHDRAWAL",
+    "FUND_TRANSFER", "LOAN_APPLICATION_SUBMITTED", "LOAN_APPLICATION_DECIDED", "ACCOUNT_LIFECYCLE_CHANGED", "ACCESS_DENIED"]) {
+    assert.ok(actions.has(required), required + " must be recorded");
+  }
+  const denied = logs.find(log => log.action === "ACCESS_DENIED");
+  assert.equal(denied.userId, "usr-customer-001");
+  assert.equal(denied.metadata.path, "/api/admin/audit");
+  assert.equal(denied.metadata.role, "CUSTOMER");
+  const serialized = JSON.stringify(logs);
+  assert.equal(serialized.includes("WrongPass-Not-Real-1"), false);
+  assert.equal(serialized.includes("Password@123"), false);
+});
+
+test("viewing the audit trail is itself audited and customers cannot read it", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  assert.equal((await auditQuery(base, customerToken)).status, 403);
+  assert.equal((await fetch(base + "/api/admin/audit")).status, 401);
+
+  assert.equal((await auditQuery(base, staffToken, "?result=FAILURE")).status, 200);
+  const second = (await auditQuery(base, staffToken)).body.auditLogs;
+  const viewed = second.find(log => log.action === "AUDIT_LOG_VIEWED");
+  assert.ok(viewed);
+  assert.equal(viewed.userId, "usr-staff-001");
+  assert.equal(viewed.metadata.filters.result, "FAILURE");
+});
+
+test("audit trail can be filtered by result, action, user and date range and is paged newest first", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await generateAuditActivity(base, customerToken, staffToken);
+
+  const failures = (await auditQuery(base, staffToken, "?result=FAILURE")).body;
+  assert.ok(failures.auditLogs.length > 0);
+  assert.ok(failures.auditLogs.every(log => log.result === "FAILURE"));
+
+  const deposits = (await auditQuery(base, staffToken, "?action=CASH_DEPOSIT")).body;
+  assert.equal(deposits.total, 1);
+  assert.equal(deposits.auditLogs[0].action, "CASH_DEPOSIT");
+
+  const byUser = (await auditQuery(base, staffToken, "?userId=usr-customer-001&action=FUND_TRANSFER")).body;
+  assert.equal(byUser.total, 1);
+  assert.equal((await auditQuery(base, staffToken, "?userId=usr-staff-001&action=FUND_TRANSFER")).body.total, 0);
+
+  const all = (await auditQuery(base, staffToken)).body;
+  assert.equal(all.total, all.auditLogs.length);
+  for (let i = 1; i < all.auditLogs.length; i++) {
+    assert.ok(all.auditLogs[i - 1].timestamp >= all.auditLogs[i].timestamp, "newest first");
+  }
+
+  const stamp = deposits.auditLogs[0].timestamp;
+  assert.equal((await auditQuery(base, staffToken, "?action=CASH_DEPOSIT&from=" + stamp + "&to=" + stamp)).body.total, 1, "inclusive range");
+  assert.equal((await auditQuery(base, staffToken, "?action=CASH_DEPOSIT&from=" + new Date(Date.parse(stamp) + 1).toISOString())).body.total, 0);
+  assert.equal((await auditQuery(base, staffToken, "?action=CASH_DEPOSIT&to=" + new Date(Date.parse(stamp) - 1).toISOString())).body.total, 0);
+
+  // Page through failures only: reading the trail adds its own AUDIT_LOG_VIEWED (a SUCCESS) entry each time,
+  // so an unfiltered listing shifts between calls.
+  const failureList = (await auditQuery(base, staffToken, "?result=FAILURE")).body;
+  assert.ok(failureList.total >= 3);
+  const page = (await auditQuery(base, staffToken, "?result=FAILURE&limit=2&offset=1")).body;
+  assert.equal(page.auditLogs.length, 2);
+  assert.equal(page.limit, 2);
+  assert.equal(page.offset, 1);
+  assert.equal(page.total, failureList.total);
+  assert.equal(page.auditLogs[0].id, failureList.auditLogs[1].id);
+  assert.equal(page.auditLogs[1].id, failureList.auditLogs[2].id);
+  assert.equal((await auditQuery(base, staffToken, "?result=FAILURE&offset=100000")).body.auditLogs.length, 0);
+});
+
+test("invalid audit filters are rejected with 400", async t => {
+  const { base } = await start(t);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const invalid = [
+    "?result=maybe", "?result=success", "?action=lowercase", "?action=BAD-ACTION", "?limit=0", "?limit=1001", "?limit=abc",
+    "?offset=-1", "?from=bad-date", "?from=2026-10-20&to=2026-10-10", "?userId=a&userId=b", "?userId=has%20space"
+  ];
+  for (const query of invalid) {
+    const response = await auditQuery(base, staffToken, query);
+    assert.equal(response.status, 400, query + " should be rejected");
+    assert.equal(response.body.auditLogs, undefined);
+  }
+});
