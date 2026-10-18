@@ -189,16 +189,69 @@ function auditResult(action) {
   return /_(REJECTED|FAILED|BLOCKED|DENIED|CONFLICT)$/.test(String(action)) ? "FAILURE" : "SUCCESS";
 }
 
-function audit(action, userId, metadata = {}) {
-  store.auditLogs.push({
+// BMS-NF-004: retention period for audit records. The SRS leaves the period to organizational policy, so
+// this default (7 years) is provisional and can be changed with BMS_AUDIT_RETENTION_DAYS.
+const DEFAULT_AUDIT_RETENTION_DAYS = 2555;
+function auditRetentionDays() {
+  const days = Number(process.env.BMS_AUDIT_RETENTION_DAYS);
+  return Number.isInteger(days) && days >= 1 ? days : DEFAULT_AUDIT_RETENTION_DAYS;
+}
+
+// Each record is chained to the one before it, so editing, removing or reordering a record is detectable.
+function auditHash(prevHash, record) {
+  return crypto.createHash("sha256")
+    .update(prevHash + "|" + JSON.stringify([record.id, record.action, record.userId, record.timestamp, record.result, record.metadata]))
+    .digest("hex");
+}
+
+function audit(action, userId, metadata = {}, at = now()) {
+  const logs = store.auditLogs;
+  const last = logs[logs.length - 1];
+  const record = {
     id: id("aud-"),
     action,
     userId: userId || null,
-    timestamp: now(),
+    timestamp: at,
     result: auditResult(action),
     metadata: sanitizeAuditMetadata(metadata)
-  });
+  };
+  record.prevHash = last ? (last.hash || "LEGACY") : (store.auditAnchor || "GENESIS");
+  record.hash = auditHash(record.prevHash, record);
+  logs.push(record);
   saveStore();
+}
+
+// Walks the chain from the oldest retained record. Records written before hashing existed are counted as
+// legacy and not verified; the first hashed record after them is trusted as the start of the chain.
+function verifyAuditChain() {
+  let expectedPrev = store.auditAnchor || "GENESIS";
+  let checked = 0;
+  let legacyRecords = 0;
+  for (const record of store.auditLogs) {
+    if (!record.hash) {
+      legacyRecords += 1;
+      expectedPrev = "LEGACY";
+      continue;
+    }
+    if (record.prevHash !== expectedPrev) {
+      return { verified: false, checked, legacyRecords, brokenRecordId: record.id, reason: "CHAIN_LINK_MISMATCH" };
+    }
+    if (auditHash(record.prevHash, record) !== record.hash) {
+      return { verified: false, checked, legacyRecords, brokenRecordId: record.id, reason: "RECORD_MODIFIED" };
+    }
+    checked += 1;
+    expectedPrev = record.hash;
+  }
+  return { verified: true, checked, legacyRecords, brokenRecordId: null, reason: null };
+}
+
+// Leading records older than the retention window. Only a contiguous run from the start of the chain is
+// ever eligible, so the remaining chain stays verifiable.
+function expiredAuditPrefix(referenceTime = Date.now()) {
+  const cutoff = referenceTime - auditRetentionDays() * 86400000;
+  let count = 0;
+  while (count < store.auditLogs.length && Date.parse(store.auditLogs[count].timestamp) < cutoff) count += 1;
+  return { count, cutoff: new Date(cutoff).toISOString() };
 }
 
 function addNotification(userId, title, message) {
@@ -989,14 +1042,14 @@ function createApp({ freshStore = false } = {}) {
     }
 
     const matching = store.auditLogs
-      .map(log => ({ id: log.id, action: log.action, userId: log.userId, timestamp: log.timestamp, result: log.result || auditResult(log.action), metadata: log.metadata }))
+      .map((log, index) => ({ id: log.id, action: log.action, userId: log.userId, timestamp: log.timestamp, result: log.result || auditResult(log.action), metadata: log.metadata, prevHash: log.prevHash || null, hash: log.hash || null, index }))
       .filter(log => (userId.value === null || log.userId === userId.value)
         && (action.value === null || log.action === action.value)
         && (result.value === null || log.result === result.value)
         && (from.value === null || Date.parse(log.timestamp) >= from.value)
         && (to.value === null || Date.parse(log.timestamp) <= to.value))
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    const page = matching.slice(offset.value, offset.value + limit.value);
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.index - a.index);
+    const page = matching.slice(offset.value, offset.value + limit.value).map(({ index, ...log }) => log);
 
     // Reading the audit trail is itself a security-sensitive action.
     audit("AUDIT_LOG_VIEWED", req.user.id, {
@@ -1004,6 +1057,43 @@ function createApp({ freshStore = false } = {}) {
       returned: page.length
     });
     res.json({ auditLogs: page, total: matching.length, limit: limit.value, offset: offset.value });
+  });
+
+  // BMS-NF-004: retention policy status plus a tamper-evidence check of the whole retained chain.
+  app.get("/api/admin/audit/retention", authRequired, requireRole("STAFF"), (req, res) => {
+    const integrity = verifyAuditChain();
+    const logs = store.auditLogs;
+    const expired = expiredAuditPrefix();
+    const body = {
+      retentionDays: auditRetentionDays(),
+      cutoff: expired.cutoff,
+      totalRecords: logs.length,
+      oldestRecordAt: logs.length ? logs[0].timestamp : null,
+      newestRecordAt: logs.length ? logs[logs.length - 1].timestamp : null,
+      expiredRecords: expired.count,
+      integrity
+    };
+    audit(integrity.verified ? "AUDIT_INTEGRITY_CHECKED" : "AUDIT_INTEGRITY_CHECK_FAILED", req.user.id, {
+      checked: integrity.checked, brokenRecordId: integrity.brokenRecordId, reason: integrity.reason
+    });
+    res.json(body);
+  });
+
+  // Removes only records older than the retention period, and only on an explicit, audited staff request.
+  app.post("/api/admin/audit/retention/purge", authRequired, requireRole("STAFF"), (req, res) => {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: "Send { \"confirm\": true } to purge audit records older than the retention period" });
+    }
+    const expired = expiredAuditPrefix();
+    if (expired.count > 0) {
+      const removed = store.auditLogs.splice(0, expired.count);
+      // The newest removed record becomes the anchor, so the retained chain still verifies.
+      store.auditAnchor = removed[removed.length - 1].hash || "LEGACY";
+    }
+    audit("AUDIT_RETENTION_PURGED", req.user.id, {
+      removed: expired.count, cutoff: expired.cutoff, retentionDays: auditRetentionDays()
+    });
+    res.json({ removed: expired.count, retentionDays: auditRetentionDays(), cutoff: expired.cutoff, remaining: store.auditLogs.length });
   });
 
   app.use(express.static(path.join(__dirname, "..", "frontend")));
@@ -1035,4 +1125,5 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { createApp, startServer, seedStore, hashPassword, verifyPassword };
+// audit and getStore are exported so tests can write backdated records and simulate tampering.
+module.exports = { createApp, startServer, seedStore, hashPassword, verifyPassword, audit, getStore: () => store };
