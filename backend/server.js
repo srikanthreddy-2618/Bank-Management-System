@@ -411,7 +411,9 @@ function createApp({ freshStore = false } = {}) {
       repaymentAmount: null,
       outstandingBalance: null,
       submittedAt: now(),
-      decisionAt: null
+      decisionAt: null,
+      decidedBy: null,
+      decisionReason: null
     };
     store.loans.push(loan);
     addNotification(req.user.id, "Loan application submitted", "Your application for ₹" + requestedAmount.toFixed(2) + " is pending review.");
@@ -437,7 +439,16 @@ function createApp({ freshStore = false } = {}) {
     if (!loan) return res.status(404).json({ error: "Loan not found" });
     if (loan.status !== "PENDING") return res.status(409).json({ error: "Only pending applications can be decided" });
     const decision = req.body?.decision;
-    if (decision !== "APPROVED" && decision !== "REJECTED") return res.status(400).json({ error: "Decision must be APPROVED or REJECTED" });
+    if (!["APPROVED", "REJECTED", "RETURNED"].includes(decision)) {
+      return res.status(400).json({ error: "Decision must be APPROVED, REJECTED or RETURNED" });
+    }
+    // BMS-F-014: the decision records who decided, when, and why. A reason is mandatory when the
+    // application is rejected or returned to the applicant, and optional on approval.
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (decision !== "APPROVED" && (reason.length < 5 || reason.length > 240)) {
+      return res.status(400).json({ error: "A reason of 5-240 characters is required to reject or return an application" });
+    }
+    if (reason.length > 240) return res.status(400).json({ error: "Reason must be at most 240 characters" });
 
     let repaymentAmount = null;
     let outstandingBalance = null;
@@ -472,6 +483,8 @@ function createApp({ freshStore = false } = {}) {
     loan.repaymentAmount = repaymentAmount;
     loan.outstandingBalance = outstandingBalance;
     loan.decisionAt = now();
+    loan.decidedBy = req.user.id;
+    loan.decisionReason = reason || null;
 
     if (decision === "APPROVED") {
       disbursementAccount.balance = Math.round((disbursementAccount.balance + loan.amount) * 100) / 100;
@@ -492,10 +505,10 @@ function createApp({ freshStore = false } = {}) {
 
     addNotification(loan.userId, "Loan application " + decision.toLowerCase(), decision === "APPROVED"
       ? "Your loan was approved and ₹" + Number(loan.amount).toFixed(2) + " was credited. Monthly repayment is ₹" + repaymentAmount.toFixed(2) + "."
-      : "Your loan application was rejected.");
+      : "Your loan application was " + decision.toLowerCase() + ". Reason: " + reason);
     saveStore();
     audit("LOAN_APPLICATION_DECIDED", req.user.id, {
-      loanId: loan.id, decision, repaymentAmount,
+      loanId: loan.id, decision, reason: reason || null, decidedAt: loan.decisionAt, repaymentAmount,
       disbursementAccountId: disbursementAccount?.id || null,
       disbursementTransactionId: disbursementTransaction?.id || null
     });
@@ -936,6 +949,7 @@ function createApp({ freshStore = false } = {}) {
         pending: loans.filter(loan => loan.status === "PENDING").length,
         approved: loans.filter(loan => loan.status === "APPROVED").length,
         rejected: loans.filter(loan => loan.status === "REJECTED").length,
+        returned: loans.filter(loan => loan.status === "RETURNED").length,
         paid: loans.filter(loan => loan.status === "PAID").length,
         outstandingBalance: Math.round(loans.reduce((total, loan) => total + Number(loan.outstandingBalance || 0), 0) * 100) / 100
       },

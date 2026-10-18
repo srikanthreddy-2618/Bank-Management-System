@@ -795,3 +795,172 @@ test("history cannot be read for another customer's account or without logging i
   const anonymous = await fetch(base + HISTORY + "?accountId=acc-1001");
   assert.equal(anonymous.status, 401);
 });
+
+// ---- BMS-F-014 / issue #33: loan approval, rejection and return ----
+
+async function applyForLoan(base, token, amount = 3000) {
+  const response = await post(base, "/api/loans", {
+    amount, tenureMonths: 12, purpose: "Home appliance purchase"
+  }, token);
+  assert.equal(response.status, 201);
+  return (await response.json()).loan;
+}
+
+async function decideLoan(base, staffToken, loanId, body) {
+  const response = await fetch(base + "/api/loans/" + loanId + "/decision", {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer " + staffToken },
+    body: JSON.stringify(body)
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+async function loanFor(base, token, loanId) {
+  const response = await get(base, "/api/loans", token);
+  return (await response.json()).loans.find(item => item.id === loanId);
+}
+
+test("rejecting a loan records who, when and why, and moves no money", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+
+  const result = await decideLoan(base, staffToken, loan.id, { decision: "REJECTED", reason: "Insufficient income proof" });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.loan.status, "REJECTED");
+  assert.equal(result.body.loan.decidedBy, "usr-staff-001");
+  assert.equal(result.body.loan.decisionReason, "Insufficient income proof");
+  assert.ok(!Number.isNaN(Date.parse(result.body.loan.decisionAt)));
+  assert.equal(result.body.transaction, null);
+
+  assert.equal(await accountBalance(base, customerToken), 10000);
+  const entries = await accountTransactions(base, customerToken);
+  assert.equal(entries.filter(item => item.type === "LOAN_DISBURSEMENT").length, 0);
+
+  // The applicant can see the outcome and the reason.
+  const seen = await loanFor(base, customerToken, loan.id);
+  assert.equal(seen.status, "REJECTED");
+  assert.equal(seen.decisionReason, "Insufficient income proof");
+
+  // Audit trail records the staff user, decision and reason.
+  const logs = (await (await get(base, "/api/admin/audit", staffToken)).json()).auditLogs;
+  const entry = logs.find(log => log.action === "LOAN_APPLICATION_DECIDED" && log.metadata.loanId === loan.id);
+  assert.ok(entry);
+  assert.equal(entry.userId, "usr-staff-001");
+  assert.equal(entry.metadata.decision, "REJECTED");
+  assert.equal(entry.metadata.reason, "Insufficient income proof");
+});
+
+test("returning a loan to the applicant records the reason, blocks repayment and moves no money", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+
+  const result = await decideLoan(base, staffToken, loan.id, { decision: "RETURNED", reason: "Please attach salary slips" });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.loan.status, "RETURNED");
+  assert.equal(result.body.loan.decidedBy, "usr-staff-001");
+  assert.equal(result.body.loan.decisionReason, "Please attach salary slips");
+  assert.equal(await accountBalance(base, customerToken), 10000);
+
+  const repayment = await post(base, "/api/loans/" + loan.id + "/repayments", {
+    accountId: "acc-1001", amount: 100
+  }, customerToken, { "Idempotency-Key": "loan-returned-repay-001" });
+  assert.ok(repayment.status >= 400, "a returned application cannot be repaid");
+  assert.equal(await accountBalance(base, customerToken), 10000);
+
+  const logs = (await (await get(base, "/api/admin/audit", staffToken)).json()).auditLogs;
+  assert.ok(logs.some(log => log.action === "LOAN_APPLICATION_DECIDED" && log.metadata.decision === "RETURNED" && log.metadata.reason === "Please attach salary slips"));
+});
+
+test("approving a loan records the deciding staff user and time, with an optional reason", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+
+  const result = await decideLoan(base, staffToken, loan.id, {
+    decision: "APPROVED", annualRatePercent: 10, disbursementAccountId: "acc-1001", reason: "Meets income criteria"
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.loan.status, "APPROVED");
+  assert.equal(result.body.loan.decidedBy, "usr-staff-001");
+  assert.equal(result.body.loan.decisionReason, "Meets income criteria");
+  assert.ok(!Number.isNaN(Date.parse(result.body.loan.decisionAt)));
+  assert.equal(await accountBalance(base, customerToken), 13000);
+
+  // A reason is optional on approval.
+  const second = await applyForLoan(base, customerToken, 1000);
+  const plain = await decideLoan(base, staffToken, second.id, {
+    decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001"
+  });
+  assert.equal(plain.status, 200);
+  assert.equal(plain.body.loan.decisionReason, null);
+});
+
+test("rejecting or returning without a valid reason is refused and the loan stays pending", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+
+  const invalid = [
+    { decision: "REJECTED" },
+    { decision: "REJECTED", reason: "" },
+    { decision: "REJECTED", reason: "no" },
+    { decision: "RETURNED", reason: "    " },
+    { decision: "RETURNED", reason: 12345 },
+    { decision: "REJECTED", reason: "x".repeat(241) },
+    { decision: "APPROVED", annualRatePercent: 5, disbursementAccountId: "acc-1001", reason: "y".repeat(241) },
+    { decision: "PENDING", reason: "Not a decision" },
+    { decision: "approved", annualRatePercent: 5, disbursementAccountId: "acc-1001" },
+    {}
+  ];
+  for (const body of invalid) {
+    const result = await decideLoan(base, staffToken, loan.id, body);
+    assert.equal(result.status, 400, JSON.stringify(body).slice(0, 60) + " should be rejected");
+  }
+  assert.equal((await loanFor(base, customerToken, loan.id)).status, "PENDING");
+  assert.equal(await accountBalance(base, customerToken), 10000);
+});
+
+test("a decided loan cannot be decided again, so approval disburses exactly once", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+  const approval = { decision: "APPROVED", annualRatePercent: 0, disbursementAccountId: "acc-1001" };
+
+  assert.equal((await decideLoan(base, staffToken, loan.id, approval)).status, 200);
+  assert.equal((await decideLoan(base, staffToken, loan.id, approval)).status, 409);
+  assert.equal((await decideLoan(base, staffToken, loan.id, { decision: "REJECTED", reason: "Changed my mind" })).status, 409);
+  assert.equal(await accountBalance(base, customerToken), 13000);
+  const entries = await accountTransactions(base, customerToken);
+  assert.equal(entries.filter(item => item.type === "LOAN_DISBURSEMENT").length, 1);
+  assert.equal((await loanFor(base, customerToken, loan.id)).status, "APPROVED");
+});
+
+test("customers cannot decide loans and unknown loans return 404", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+
+  const asCustomer = await decideLoan(base, customerToken, loan.id, { decision: "RETURNED", reason: "Trying to self-return" });
+  assert.equal(asCustomer.status, 403);
+  assert.equal((await loanFor(base, customerToken, loan.id)).status, "PENDING");
+  assert.equal((await decideLoan(base, staffToken, "loan-does-not-exist", { decision: "REJECTED", reason: "No such loan" })).status, 404);
+});
+
+test("the operational report counts returned loans separately", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const loan = await applyForLoan(base, customerToken);
+  assert.equal((await decideLoan(base, staffToken, loan.id, { decision: "RETURNED", reason: "Missing documents" })).status, 200);
+  const report = await (await get(base, "/api/admin/reports/summary", staffToken)).json();
+  assert.equal(report.loans.returned, 1);
+  assert.equal(report.loans.pending, 0);
+});

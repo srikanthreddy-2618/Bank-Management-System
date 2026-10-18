@@ -79,3 +79,11 @@ The API test suite includes loan application/approval, repayment balance and tra
 - Optional `from` and `to` query parameters filter by creation time, inclusive at both ends. They accept ISO dates (`YYYY-MM-DD`; a date-only `to` runs to the end of that day, UTC) or ISO timestamps. Invalid values, repeated parameters, or a `from` after `to` return `400`.
 - Only entries that belong to the selected account(s) are returned. Previously the counterparty account was matched too, so a transfer also returned the other party's ledger row, including that account's balance after the transfer.
 - The dashboard has an account selector, From/To date inputs, Apply and Clear. The browser sends the user's local day boundaries as ISO timestamps so the range matches the dates they picked. The selection survives dashboard refreshes.
+
+## Loan approval, rejection and return — BMS-F-014 / Issue #33
+
+- `PATCH /api/loans/:id/decision` (staff only) accepts `APPROVED`, `REJECTED` or `RETURNED` for a `PENDING` application.
+- Every decision records the deciding staff user (`decidedBy`), the time (`decisionAt`) and the `reason`, and writes a `LOAN_APPLICATION_DECIDED` audit entry containing the same details.
+- A reason of 5-240 characters is required to reject or return an application and is optional on approval. The applicant sees the status and reason in their loan list and notification.
+- Only pending applications can be decided, so a repeated approval cannot disburse twice (`409`). Approval still requires a rate and an active account belonging to the applicant.
+- A returned application is closed with its reason; the applicant submits a new application with the corrections (there is no edit-and-resubmit flow yet). The operational report counts returned applications separately.
