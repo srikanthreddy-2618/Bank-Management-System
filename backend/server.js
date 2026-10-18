@@ -598,12 +598,48 @@ function createApp({ freshStore = false } = {}) {
   });
 
   app.post("/api/transactions/deposit", authRequired, (req, res) => {
-    const account = ownedAccount(req.user, req.body?.accountId);
-    if (account === undefined) return res.status(403).json({ error: "Unauthorized account" });
-    if (!account) return res.status(404).json({ error: "Account not found" });
-    if (account.status !== "ACTIVE") return res.status(400).json({ error: "Account is not active" });
+    const accountId = typeof req.body?.accountId === "string" ? req.body.accountId : null;
     const amount = positiveAmount(req.body?.amount);
-    if (!amount) return res.status(400).json({ error: "Amount must be positive" });
+    const idempotencyKey = String(req.get("Idempotency-Key") || "").trim();
+
+    // Require a client-generated key so a retried request can never credit an account twice (BMS-F-007).
+    if (!/^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) {
+      audit("CASH_DEPOSIT_REJECTED", req.user.id, { reason: "MISSING_OR_INVALID_IDEMPOTENCY_KEY" });
+      return res.status(400).json({ error: "A valid Idempotency-Key header is required for deposits" });
+    }
+
+    const fingerprint = crypto.createHash("sha256")
+      .update(JSON.stringify({ accountId, amount }))
+      .digest("hex");
+    // Scope keys to the authenticated user and deposit operation.
+    const scopedKey = req.user.id + ":deposit:" + idempotencyKey;
+    const previous = store.idempotencyKeys[scopedKey];
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) {
+        audit("CASH_DEPOSIT_IDEMPOTENCY_CONFLICT", req.user.id, {
+          accountId, reason: "KEY_REUSED_WITH_DIFFERENT_REQUEST"
+        });
+        return res.status(409).json({ error: "Idempotency-Key was already used for a different deposit request" });
+      }
+      audit("CASH_DEPOSIT_IDEMPOTENT_REPLAY", req.user.id, {
+        accountId, transactionId: previous.response.transaction.id
+      });
+      return res.status(previous.statusCode || 201).json({ ...previous.response, idempotentReplay: true });
+    }
+
+    const reject = (status, error, reason) => {
+      const metadata = { reason };
+      if (accountId && accountId.length <= 40) metadata.accountId = accountId;
+      audit("CASH_DEPOSIT_REJECTED", req.user.id, metadata);
+      return res.status(status).json({ error });
+    };
+
+    const account = ownedAccount(req.user, accountId);
+    if (account === undefined) return reject(403, "Unauthorized account", "UNAUTHORIZED_ACCOUNT");
+    if (!account) return reject(404, "Account not found", "ACCOUNT_NOT_FOUND");
+    if (account.status !== "ACTIVE") return reject(400, "Account is not active", "ACCOUNT_NOT_ACTIVE");
+    if (!amount) return reject(400, "Amount must be positive", "INVALID_AMOUNT");
+
     account.balance += amount;
     const transaction = {
       id: id("txn-"),
@@ -611,15 +647,22 @@ function createApp({ freshStore = false } = {}) {
       type: "DEPOSIT",
       amount,
       balanceAfter: account.balance,
-      description: req.body.description || "Cash deposit",
+      description: req.body?.description || "Cash deposit",
       createdAt: now(),
       status: "SUCCESS"
     };
     store.transactions.push(transaction);
     addNotification(account.userId, "Deposit successful", `₹${amount.toFixed(2)} was deposited into account ${account.accountNumber}.`);
+
+    const response = { transaction, account: publicAccount(account) };
+    // Persist the credit, transaction and idempotency result together in the demo store.
+    store.idempotencyKeys[scopedKey] = { fingerprint, statusCode: 201, response, createdAt: now() };
     saveStore();
-    audit("CASH_DEPOSIT", req.user.id, { accountId: account.id, amount });
-    res.status(201).json({ transaction, account: publicAccount(account) });
+    audit("CASH_DEPOSIT", req.user.id, {
+      accountId: account.id, amount, transactionId: transaction.id,
+      idempotencyKeyHash: crypto.createHash("sha256").update(idempotencyKey).digest("hex")
+    });
+    return res.status(201).json(response);
   });
 
   app.post("/api/transactions/withdraw", authRequired, (req, res) => {

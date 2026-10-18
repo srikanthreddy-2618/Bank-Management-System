@@ -3,6 +3,11 @@ function readPendingWithdrawal() {
   catch { return null; }
 }
 
+function readPendingDeposit() {
+  try { return JSON.parse(sessionStorage.getItem("bmsPendingDeposit") || "null"); }
+  catch { return null; }
+}
+
 function readPendingLoanRepayments() {
   try { return JSON.parse(sessionStorage.getItem("bmsPendingLoanRepayments") || "{}"); }
   catch { return {}; }
@@ -16,6 +21,7 @@ const state = {
   loans: [],
   // Kept in sessionStorage so refresh/retry after a timeout reuses the same request key.
   pendingWithdrawal: readPendingWithdrawal(),
+  pendingDeposit: readPendingDeposit(),
   pendingLoanRepayments: readPendingLoanRepayments()
 };
 const $ = id => document.getElementById(id);
@@ -250,7 +256,7 @@ function setPendingLoanRepayment(loanId, request) {
 
 function newIdempotencyKey() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
-  return "withdraw-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+  return "bms-" + Date.now() + "-" + Math.random().toString(36).slice(2);
 }
 
 function setPendingWithdrawal(request) {
@@ -263,10 +269,21 @@ function setPendingWithdrawal(request) {
   }
 }
 
+function setPendingDeposit(request) {
+  state.pendingDeposit = request;
+  try {
+    if (request) sessionStorage.setItem("bmsPendingDeposit", JSON.stringify(request));
+    else sessionStorage.removeItem("bmsPendingDeposit");
+  } catch {
+    // The in-memory key still protects same-page retries if session storage is unavailable.
+  }
+}
+
 async function transaction(endpoint, accountField, amountField) {
   const accountId = $(accountField).value;
   const amount = Number($(amountField).value);
   const isWithdrawal = endpoint === "/api/transactions/withdraw";
+  const isDeposit = endpoint === "/api/transactions/deposit";
   const headers = {};
 
   if (isWithdrawal) {
@@ -277,6 +294,14 @@ async function transaction(endpoint, accountField, amountField) {
     headers["Idempotency-Key"] = state.pendingWithdrawal.key;
   }
 
+  if (isDeposit) {
+    const pending = state.pendingDeposit;
+    if (!pending || pending.accountId !== accountId || pending.amount !== amount) {
+      setPendingDeposit({ key: newIdempotencyKey(), accountId, amount });
+    }
+    headers["Idempotency-Key"] = state.pendingDeposit.key;
+  }
+
   try {
     await api(endpoint, {
       method: "POST",
@@ -284,11 +309,12 @@ async function transaction(endpoint, accountField, amountField) {
       body: JSON.stringify({ accountId, amount })
     });
     if (isWithdrawal) setPendingWithdrawal(null);
+    if (isDeposit) setPendingDeposit(null);
     $(amountField).value = "";
     await loadDashboard();
     toast("Transaction completed successfully");
   } catch(e) {
-    // Keep the withdrawal key after a timeout/network error; submitting the same
+    // Keep the deposit/withdrawal key after a timeout/network error; submitting the same
     // account and amount again will safely replay the original server result.
     toast(e.message);
   }

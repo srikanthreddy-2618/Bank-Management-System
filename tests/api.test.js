@@ -82,8 +82,14 @@ test("authenticated customer can deposit, withdraw and transfer", async t => {
 
   const deposit = await post(base, "/api/transactions/deposit", {
     accountId: "acc-1001", amount: 250
-  }, token);
+  }, token, { "Idempotency-Key": "test-deposit-core-001" });
   assert.equal(deposit.status, 201);
+
+  const depositBody = await deposit.json();
+  assert.equal(depositBody.transaction.type, "DEPOSIT");
+  assert.equal(depositBody.transaction.amount, 250);
+  assert.equal(depositBody.transaction.balanceAfter, 10250);
+  assert.equal(depositBody.account.balance, 10250);
 
   const withdrawal = await post(base, "/api/transactions/withdraw", {
     accountId: "acc-1001", amount: 100
@@ -402,4 +408,125 @@ test("retrying a loan repayment with the same idempotency key debits only once",
   assert.equal(await accountBalance(base, customerToken), 11500);
   const transactions = await accountTransactions(base, customerToken);
   assert.equal(transactions.filter(item => item.type === "LOAN_REPAYMENT").length, 1);
+});
+
+// ---- BMS-F-007 / issue #26: cash deposit ----
+
+test("invalid deposits are rejected without changing balance or creating transactions", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+
+  const invalidCases = [
+    { name: "zero amount", status: 400, body: { accountId: "acc-1001", amount: 0 } },
+    { name: "negative amount", status: 400, body: { accountId: "acc-1001", amount: -10 } },
+    { name: "missing amount", status: 400, body: { accountId: "acc-1001" } },
+    { name: "missing account", status: 404, body: { amount: 100 } },
+    { name: "unknown account", status: 404, body: { accountId: "missing-account", amount: 100 } }
+  ];
+
+  for (const [index, item] of invalidCases.entries()) {
+    const response = await post(base, "/api/transactions/deposit", item.body, token, {
+      "Idempotency-Key": "test-deposit-invalid-" + index
+    });
+    assert.equal(response.status, item.status, item.name + ": unexpected status");
+    assert.equal(await accountBalance(base, token), 10000, item.name + " must not change the balance");
+  }
+
+  const transactions = await accountTransactions(base, token);
+  assert.equal(
+    transactions.filter(item => item.type === "DEPOSIT").length,
+    0,
+    "Rejected deposits must not create deposit transactions"
+  );
+});
+
+test("customer cannot deposit into another customer's account", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const response = await post(base, "/api/transactions/deposit", {
+    accountId: "acc-2001",
+    amount: 500
+  }, customerToken, { "Idempotency-Key": "test-deposit-foreign-001" });
+
+  assert.equal(response.status, 403);
+  assert.equal(await accountBalance(base, customerToken), 10000);
+  assert.equal(await accountBalance(base, staffToken, "acc-2001"), 25000);
+
+  const staffTransactions = await accountTransactions(base, staffToken, "acc-2001");
+  assert.equal(staffTransactions.filter(item => item.type === "DEPOSIT").length, 0);
+});
+
+test("deposit without an idempotency key is rejected without crediting", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const response = await post(base, "/api/transactions/deposit", {
+    accountId: "acc-1001", amount: 100
+  }, token);
+  assert.equal(response.status, 400);
+  assert.equal(await accountBalance(base, token), 10000);
+  assert.equal((await accountTransactions(base, token)).filter(item => item.type === "DEPOSIT").length, 0);
+});
+
+test("retrying the same deposit key credits exactly once and creates one transaction", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const body = { accountId: "acc-1001", amount: 100 };
+  const headers = { "Idempotency-Key": "test-deposit-retry-001" };
+
+  const first = await post(base, "/api/transactions/deposit", body, token, headers);
+  assert.equal(first.status, 201);
+  const firstBody = await first.json();
+  assert.equal(firstBody.transaction.type, "DEPOSIT");
+
+  // Simulates the client retrying the same request after a timeout/lost response.
+  const retry = await post(base, "/api/transactions/deposit", body, token, headers);
+  assert.equal(retry.status, 201);
+  const retryBody = await retry.json();
+  assert.equal(retryBody.idempotentReplay, true);
+  assert.equal(retryBody.transaction.id, firstBody.transaction.id);
+
+  assert.equal(await accountBalance(base, token), 10100);
+  const deposits = (await accountTransactions(base, token)).filter(item => item.type === "DEPOSIT");
+  assert.equal(deposits.length, 1);
+  assert.equal(deposits[0].id, firstBody.transaction.id);
+});
+
+test("reusing a deposit key with a different request returns conflict", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const key = { "Idempotency-Key": "test-deposit-conflict-001" };
+  const first = await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 100 }, token, key);
+  assert.equal(first.status, 201);
+
+  const conflict = await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 200 }, token, key);
+  assert.equal(conflict.status, 409);
+  assert.equal(await accountBalance(base, token), 10100);
+  assert.equal((await accountTransactions(base, token)).filter(item => item.type === "DEPOSIT").length, 1);
+});
+
+test("successful, replayed and rejected deposits are audited without passwords or OTP values", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const body = { accountId: "acc-1001", amount: 50 };
+  const headers = { "Idempotency-Key": "test-deposit-audit-001" };
+  assert.equal((await post(base, "/api/transactions/deposit", body, customerToken, headers)).status, 201);
+  assert.equal((await post(base, "/api/transactions/deposit", body, customerToken, headers)).status, 201);
+  const rejected = await post(base, "/api/transactions/deposit", {
+    accountId: "acc-1001", amount: 0
+  }, customerToken, { "Idempotency-Key": "test-deposit-audit-002" });
+  assert.equal(rejected.status, 400);
+
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const auditResponse = await get(base, "/api/admin/audit", staffToken);
+  assert.equal(auditResponse.status, 200);
+  const logs = (await auditResponse.json()).auditLogs;
+  assert.ok(logs.some(log => log.action === "CASH_DEPOSIT" && log.userId === "usr-customer-001"));
+  assert.ok(logs.some(log => log.action === "CASH_DEPOSIT_IDEMPOTENT_REPLAY"));
+  assert.ok(logs.some(log => log.action === "CASH_DEPOSIT_REJECTED" && log.metadata.reason === "INVALID_AMOUNT"));
+  const serializedLogs = JSON.stringify(logs);
+  assert.equal(serializedLogs.includes("Password@123"), false);
+  assert.equal(serializedLogs.includes("123456"), false);
+  assert.equal(serializedLogs.includes("test-deposit-audit-001"), false, "raw idempotency keys must not be logged");
 });
