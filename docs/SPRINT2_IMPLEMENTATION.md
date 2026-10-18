@@ -72,3 +72,10 @@ The JSON demo store is still a single-process academic store. A production deplo
 ## Verification
 
 The API test suite includes loan application/approval, repayment balance and transaction recording, invalid repayment rejection, report access control, and audit privacy checks. The CI workflow also runs syntax checks, the regression suite, and the performance baseline.
+
+## Transaction history — BMS-F-011 / Issue #30
+
+- `GET /api/transactions` returns the history for one selected account (`accountId`) or, without it, every account the caller may see (customers: their own; staff: all). An account the caller does not own returns `403`.
+- Optional `from` and `to` query parameters filter by creation time, inclusive at both ends. They accept ISO dates (`YYYY-MM-DD`; a date-only `to` runs to the end of that day, UTC) or ISO timestamps. Invalid values, repeated parameters, or a `from` after `to` return `400`.
+- Only entries that belong to the selected account(s) are returned. Previously the counterparty account was matched too, so a transfer also returned the other party's ledger row, including that account's balance after the transfer.
+- The dashboard has an account selector, From/To date inputs, Apply and Clear. The browser sends the user's local day boundaries as ISO timestamps so the range matches the dates they picked. The selection survives dashboard refreshes.
