@@ -187,7 +187,9 @@ async function loadLoans() {
       action = `<div class="loan-actions">
         <label>Credit to applicant account<select data-disbursement-account="${escapeHtml(loan.id)}">${disbursementOptions}</select></label>
         <label>Annual rate (%)<input type="number" min="0" max="100" step="0.01" value="8.5" data-loan-rate="${escapeHtml(loan.id)}"></label>
+        <label>Reason (required to reject or return)<input type="text" maxlength="240" data-loan-reason="${escapeHtml(loan.id)}"></label>
         <button type="button" data-loan-decision="APPROVED" data-loan-id="${escapeHtml(loan.id)}">Approve & disburse</button>
+        <button type="button" class="secondary" data-loan-decision="RETURNED" data-loan-id="${escapeHtml(loan.id)}">Return to applicant</button>
         <button type="button" class="secondary" data-loan-decision="REJECTED" data-loan-id="${escapeHtml(loan.id)}">Reject</button>
       </div>`;
     } else if (state.userRole === "CUSTOMER" && loan.status === "APPROVED" && Number(loan.outstandingBalance) > 0) {
@@ -205,7 +207,7 @@ async function loadLoans() {
       <td>${Number(loan.amount).toFixed(2)}</td>
       <td>${Number(loan.tenureMonths)} months</td>
       <td><span>${escapeHtml(loan.purpose || "")}</span><br><small>${escapeHtml(loan.id)}</small></td>
-      <td>${escapeHtml(loan.status)}</td>
+      <td>${escapeHtml(loan.status)}${loan.decisionReason ? `<br><small>Reason: ${escapeHtml(loan.decisionReason)}</small>` : ""}</td>
       <td>${loan.repaymentAmount == null ? "—" : Number(loan.repaymentAmount).toFixed(2)}</td>
       <td>${loan.outstandingBalance == null ? "—" : Number(loan.outstandingBalance).toFixed(2)}</td>
       <td>${action}</td>
@@ -218,6 +220,13 @@ async function loadLoans() {
       const decision = button.dataset.loanDecision;
       const rate = document.querySelector(`[data-loan-rate="${loanId}"]`);
       const payload = { decision };
+      const reasonInput = document.querySelector(`[data-loan-reason="${loanId}"]`);
+      const reason = reasonInput ? reasonInput.value.trim() : "";
+      if (reason) payload.reason = reason;
+      if (decision !== "APPROVED" && reason.length < 5) {
+        $("loansMessage").textContent = "Enter a reason of at least 5 characters to reject or return an application.";
+        return;
+      }
       if (decision === "APPROVED") {
         payload.annualRatePercent = Number(rate.value);
         payload.disbursementAccountId = document.querySelector(`[data-disbursement-account="${loanId}"]`).value;
