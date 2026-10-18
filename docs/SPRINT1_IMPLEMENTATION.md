@@ -14,7 +14,7 @@ This implementation turns the BMS documentation backlog into a runnable web appl
 | BMS-F-004 | Staff account creation API |
 | BMS-F-005 | Staff account lifecycle API |
 | BMS-F-006 | Balance inquiry dashboard |
-| BMS-F-007 | Cash deposit |
+| BMS-F-007 | Cash deposit with account-ownership validation, request idempotency (credit applied exactly once) and audited rejections |
 | BMS-F-008 | Cash withdrawal with amount/balance validation, request idempotency and duplicate-retry protection |
 | BMS-F-009 | Fund transfer with source/destination validation |
 | BMS-F-010 | Beneficiary add/remove |
