@@ -95,3 +95,12 @@ The API test suite includes loan application/approval, repayment balance and tra
 - `GET /api/admin/audit` (staff only) returns `{ auditLogs, total, limit, offset }`, newest first, with optional filters `userId`, `action` (exact, UPPER_CASE), `result`, `from`/`to` (inclusive, ISO date or timestamp), `limit` (1-1000, default 500) and `offset`. Invalid filters return `400`.
 - The staff dashboard has an Audit Trail panel (result, action and date filters). It loads only when the filter form is submitted, so routine dashboard refreshes do not flood the trail with `AUDIT_LOG_VIEWED` entries.
 - Retention and tamper-evidence are covered separately by issue #43 (BMS-NF-004).
+
+## Audit log retention and verification — BMS-NF-004 / Issue #43
+
+- Retention period: `BMS_AUDIT_RETENTION_DAYS` (whole days, minimum 1; invalid values fall back to the default). The default of 2555 days (7 years) is provisional until the organization confirms its policy.
+- Audit records are hash-chained: each record stores `prevHash` and a SHA-256 `hash` over its own content and the previous hash. Editing a record, changing its time, deleting one or reordering them breaks the chain. Records written before this change are counted as legacy (not verified); the first hashed record after them starts the verified chain.
+- `GET /api/admin/audit/retention` (staff only) reports the retention period, the cutoff, how many records are retained, the oldest and newest record times, how many are past retention, and the chain verification result (`verified`, `checked`, `brokenRecordId`, `reason` of `RECORD_MODIFIED` or `CHAIN_LINK_MISMATCH`). Each check is audited (`AUDIT_INTEGRITY_CHECKED`, or `AUDIT_INTEGRITY_CHECK_FAILED` with result FAILURE).
+- `POST /api/admin/audit/retention/purge` (staff only, body `{ "confirm": true }`) removes only the oldest records that are past the retention period. Nothing is ever deleted automatically or inside the period. The newest removed record becomes the chain anchor so the retained chain still verifies, and the purge is audited (`AUDIT_RETENTION_PURGED`, with the number removed).
+- Retrieved records include `prevHash` and `hash` so an auditor can check them independently. The Audit Trail panel has a "Check retention & integrity" button.
+- The store is still the single-process JSON demo store; a deployed system would add write-once or off-host storage so the chain cannot be rewritten wholesale.

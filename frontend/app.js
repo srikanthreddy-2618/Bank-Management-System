@@ -296,6 +296,17 @@ async function loadAuditTrail() {
     : '<tr><td colspan="5">No audit records match the selected filters.</td></tr>';
 }
 
+async function loadAuditRetention() {
+  const status = await api("/api/admin/audit/retention");
+  const integrity = status.integrity;
+  const outcome = integrity.verified
+    ? `Integrity VERIFIED (${integrity.checked} chained records checked${integrity.legacyRecords ? `, ${integrity.legacyRecords} older records unchained` : ""})`
+    : `Integrity FAILED at record ${integrity.brokenRecordId} (${integrity.reason})`;
+  $("auditIntegrity").textContent = `Retention policy: ${status.retentionDays} days. ${status.totalRecords} records retained` +
+    (status.oldestRecordAt ? ` since ${new Date(status.oldestRecordAt).toLocaleDateString()}` : "") +
+    `; ${status.expiredRecords} past retention. ${outcome}.`;
+}
+
 async function loadOperationalReport() {
   const report = await api("/api/admin/reports/summary");
   $("operationalReportOutput").textContent = JSON.stringify(report, null, 2);
@@ -462,6 +473,9 @@ $("historyFilterForm").onsubmit = async e => {
     return;
   }
   try { await loadTransactions(); } catch(err) { toast(err.message); }
+};
+$("auditIntegrityBtn").onclick = async () => {
+  try { await loadAuditRetention(); } catch(err) { toast(err.message); }
 };
 $("auditFilterForm").onsubmit = async e => {
   e.preventDefault();

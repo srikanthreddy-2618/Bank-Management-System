@@ -1121,3 +1121,190 @@ test("invalid audit filters are rejected with 400", async t => {
     assert.equal(response.body.auditLogs, undefined);
   }
 });
+
+// ---- BMS-NF-004 / issue #43: audit log retention and verification ----
+
+const auditHooks = require("../backend/server");
+const DAY_MS = 86400000;
+const daysAgo = days => new Date(Date.now() - days * DAY_MS).toISOString();
+
+async function withRetentionEnv(t, value) {
+  const previous = process.env.BMS_AUDIT_RETENTION_DAYS;
+  if (value === undefined) delete process.env.BMS_AUDIT_RETENTION_DAYS;
+  else process.env.BMS_AUDIT_RETENTION_DAYS = value;
+  t.after(() => {
+    if (previous === undefined) delete process.env.BMS_AUDIT_RETENTION_DAYS;
+    else process.env.BMS_AUDIT_RETENTION_DAYS = previous;
+  });
+}
+
+async function retentionStatus(base, token) {
+  const response = await get(base, "/api/admin/audit/retention", token);
+  return { status: response.status, body: await response.json() };
+}
+
+async function purgeAudit(base, token, body) {
+  const response = await fetch(base + "/api/admin/audit/retention/purge", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+    body: JSON.stringify(body)
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+test("audit records are hash-chained and the retention check verifies the retained chain", async t => {
+  await withRetentionEnv(t, undefined);
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 100 }, customerToken, { "Idempotency-Key": "test-retention-chain-001" });
+
+  const logs = auditHooks.getStore().auditLogs;
+  assert.equal(logs[0].prevHash, "GENESIS");
+  logs.forEach((log, index) => {
+    assert.match(log.hash, /^[0-9a-f]{64}$/);
+    if (index > 0) assert.equal(log.prevHash, logs[index - 1].hash, "each record links to the previous one");
+  });
+
+  const { status, body } = await retentionStatus(base, staffToken);
+  assert.equal(status, 200);
+  assert.equal(body.retentionDays, 2555);
+  assert.equal(body.integrity.verified, true);
+  assert.equal(body.integrity.checked, body.totalRecords);
+  assert.equal(body.integrity.brokenRecordId, null);
+  assert.equal(body.expiredRecords, 0);
+  assert.ok(Date.parse(body.oldestRecordAt) <= Date.parse(body.newestRecordAt));
+
+  // Hashes are visible in the retrieved records so an auditor can check them independently.
+  const listing = (await auditQuery(base, staffToken, "?action=CASH_DEPOSIT")).body.auditLogs[0];
+  assert.match(listing.hash, /^[0-9a-f]{64}$/);
+  assert.match(listing.prevHash, /^[0-9a-f]{64}$/);
+
+  // The check itself is audited (one entry so far) and the extended chain still verifies.
+  assert.equal((await auditQuery(base, staffToken, "?action=AUDIT_INTEGRITY_CHECKED")).body.total, 1);
+  const again = (await retentionStatus(base, staffToken)).body;
+  assert.equal(again.integrity.verified, true);
+  assert.equal((await auditQuery(base, staffToken, "?action=AUDIT_INTEGRITY_CHECKED")).body.total, 2);
+});
+
+test("tampering with the audit log is detected and reported", async t => {
+  await withRetentionEnv(t, undefined);
+  const mutations = [
+    { name: "modified details", reason: "RECORD_MODIFIED", apply: logs => { const log = logs.find(item => item.action === "CASH_DEPOSIT"); log.metadata.amount = 1; return log.id; } },
+    { name: "modified timestamp", reason: "RECORD_MODIFIED", apply: logs => { logs[2].timestamp = daysAgo(400); return logs[2].id; } },
+    { name: "deleted record", reason: "CHAIN_LINK_MISMATCH", apply: logs => { const [, , removed, next] = logs; logs.splice(2, 1); return next.id; } },
+    { name: "reordered records", reason: "CHAIN_LINK_MISMATCH", apply: logs => { const second = logs[2]; logs[2] = logs[3]; logs[3] = second; return logs[2].id; } }
+  ];
+  for (const mutation of mutations) {
+    const { base } = await start(t);
+    const customerToken = await loginAs(base);
+    const staffToken = await loginAs(base, "staff@bms.local");
+    await post(base, "/api/transactions/deposit", { accountId: "acc-1001", amount: 100 }, customerToken, { "Idempotency-Key": "test-retention-tamper-001" });
+    assert.ok(auditHooks.getStore().auditLogs.length >= 5);
+
+    const brokenId = mutation.apply(auditHooks.getStore().auditLogs);
+    const { status, body } = await retentionStatus(base, staffToken);
+    assert.equal(status, 200);
+    assert.equal(body.integrity.verified, false, mutation.name + " must be detected");
+    assert.equal(body.integrity.reason, mutation.reason, mutation.name);
+    assert.equal(body.integrity.brokenRecordId, brokenId, mutation.name);
+
+    const failed = (await auditQuery(base, staffToken, "?action=AUDIT_INTEGRITY_CHECK_FAILED")).body;
+    assert.equal(failed.total, 1);
+    assert.equal(failed.auditLogs[0].result, "FAILURE");
+  }
+});
+
+test("retention period comes from configuration and falls back to the default when invalid", async t => {
+  const { base } = await start(t);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  await withRetentionEnv(t, "30");
+  assert.equal((await retentionStatus(base, staffToken)).body.retentionDays, 30);
+  for (const invalid of ["abc", "0", "-5", "1.5", ""]) {
+    process.env.BMS_AUDIT_RETENTION_DAYS = invalid;
+    assert.equal((await retentionStatus(base, staffToken)).body.retentionDays, 2555, "'" + invalid + "' must fall back");
+  }
+});
+
+test("purge removes only records older than the retention period and the chain still verifies", async t => {
+  await withRetentionEnv(t, "30");
+  const { base } = await start(t);
+  auditHooks.audit("TEST_OLD_EVENT_A", "usr-test", { n: 1 }, daysAgo(45));
+  auditHooks.audit("TEST_OLD_EVENT_B", "usr-test", { n: 2 }, daysAgo(31));
+  auditHooks.audit("TEST_RECENT_EVENT_C", "usr-test", { n: 3 }, daysAgo(29));
+  auditHooks.audit("TEST_RECENT_EVENT_D", "usr-test", { n: 4 }, daysAgo(1));
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const before = (await retentionStatus(base, staffToken)).body;
+  assert.equal(before.expiredRecords, 2);
+  assert.equal(before.integrity.verified, true);
+
+  assert.equal((await purgeAudit(base, customerToken, { confirm: true })).status, 403);
+  assert.equal((await purgeAudit(base, staffToken, {})).status, 400);
+  assert.equal((await purgeAudit(base, staffToken, { confirm: "yes" })).status, 400);
+  assert.equal((await retentionStatus(base, staffToken)).body.expiredRecords, 2, "nothing is removed without confirmation");
+
+  const purge = await purgeAudit(base, staffToken, { confirm: true });
+  assert.equal(purge.status, 200);
+  assert.equal(purge.body.removed, 2);
+  assert.equal(purge.body.retentionDays, 30);
+
+  const remaining = (await auditQuery(base, staffToken, "?userId=usr-test")).body.auditLogs.map(log => log.action).sort();
+  assert.deepEqual(remaining, ["TEST_RECENT_EVENT_C", "TEST_RECENT_EVENT_D"], "records inside the period are kept");
+
+  const after = (await retentionStatus(base, staffToken)).body;
+  assert.equal(after.expiredRecords, 0);
+  assert.equal(after.integrity.verified, true, "the retained chain still verifies after a purge");
+
+  const purged = (await auditQuery(base, staffToken, "?action=AUDIT_RETENTION_PURGED")).body.auditLogs[0];
+  assert.equal(purged.userId, "usr-staff-001");
+  assert.equal(purged.result, "SUCCESS");
+  assert.equal(purged.metadata.removed, 2);
+  assert.equal(purged.metadata.retentionDays, 30);
+
+  const second = await purgeAudit(base, staffToken, { confirm: true });
+  assert.equal(second.body.removed, 0, "a second purge has nothing left to remove");
+});
+
+test("nothing is purged while records are inside the default retention period", async t => {
+  await withRetentionEnv(t, undefined);
+  const { base } = await start(t);
+  auditHooks.audit("TEST_OLD_EVENT_A", "usr-test", {}, daysAgo(400));
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const purge = await purgeAudit(base, staffToken, { confirm: true });
+  assert.equal(purge.status, 200);
+  assert.equal(purge.body.removed, 0);
+  assert.equal((await auditQuery(base, staffToken, "?action=TEST_OLD_EVENT_A")).body.total, 1);
+});
+
+test("retention endpoints require staff access", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  assert.equal((await retentionStatus(base, customerToken)).status, 403);
+  assert.equal((await fetch(base + "/api/admin/audit/retention")).status, 401);
+  const anonymousPurge = await fetch(base + "/api/admin/audit/retention/purge", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true })
+  });
+  assert.equal(anonymousPurge.status, 401);
+});
+
+test("records written before hashing existed are reported as legacy and do not break verification or purge", async t => {
+  await withRetentionEnv(t, "30");
+  const { base } = await start(t);
+  const legacy = (idValue, at) => ({ id: idValue, action: "OLD_EVENT", userId: null, timestamp: at, metadata: {} });
+  auditHooks.getStore().auditLogs.push(legacy("aud-legacy-1", daysAgo(60)), legacy("aud-legacy-2", daysAgo(3)));
+  const staffToken = await loginAs(base, "staff@bms.local");
+
+  const before = (await retentionStatus(base, staffToken)).body;
+  assert.equal(before.integrity.verified, true);
+  assert.equal(before.integrity.legacyRecords, 2);
+  assert.equal(before.integrity.checked, before.totalRecords - 2);
+  assert.equal(before.expiredRecords, 1);
+
+  const purge = await purgeAudit(base, staffToken, { confirm: true });
+  assert.equal(purge.body.removed, 1, "only the legacy record past retention is removed");
+  const after = (await retentionStatus(base, staffToken)).body;
+  assert.equal(after.integrity.verified, true);
+  assert.equal(after.integrity.legacyRecords, 1);
+});
