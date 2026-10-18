@@ -590,12 +590,46 @@ function createApp({ freshStore = false } = {}) {
     return res.status(201).json(response);
   });
 
+  // Parses an ISO date (YYYY-MM-DD) or ISO timestamp query value. A date-only "to" runs to the end of that day (UTC).
+  const parseHistoryBoundary = (value, endOfDay) => {
+    if (value === undefined || value === "") return { value: null };
+    if (typeof value !== "string") return { error: true };
+    const text = value.trim();
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(text);
+    if (!dateOnly && !/^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:\d{2})$/.test(text)) return { error: true };
+    // Date parsing rolls impossible days (e.g. 31 Feb) forward, so check the calendar date explicitly.
+    const [year, month, day] = text.slice(0, 10).split("-").map(Number);
+    const calendar = new Date(Date.UTC(year, month - 1, day));
+    if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return { error: true };
+    const time = new Date(dateOnly ? text + (endOfDay ? "T23:59:59.999Z" : "T00:00:00.000Z") : text).getTime();
+    return Number.isNaN(time) ? { error: true } : { value: time };
+  };
+
   app.get("/api/transactions", authRequired, (req, res) => {
-    const accountId = req.query.accountId;
+    const accountId = typeof req.query.accountId === "string" ? req.query.accountId : null;
     const accounts = store.accounts.filter(a => req.user.role === "STAFF" ? true : a.userId === req.user.id);
     const allowed = accountId ? accounts.filter(a => a.id === accountId).map(a => a.id) : accounts.map(a => a.id);
     if (accountId && allowed.length === 0) return res.status(403).json({ error: "Unauthorized account" });
-    const transactions = store.transactions.filter(t => allowed.includes(t.accountId) || allowed.includes(t.counterpartyAccountId));
+
+    // Optional inclusive date range (BMS-F-011).
+    const from = parseHistoryBoundary(req.query.from, false);
+    const to = parseHistoryBoundary(req.query.to, true);
+    if (from.error || to.error) {
+      return res.status(400).json({ error: "from and to must be ISO dates (YYYY-MM-DD) or ISO timestamps" });
+    }
+    if (from.value !== null && to.value !== null && from.value > to.value) {
+      return res.status(400).json({ error: "from must not be after to" });
+    }
+
+    // Return only entries that belong to the selected account(s). Matching the counterparty as well would
+    // expose the other party's ledger row (including its balance) on every transfer.
+    const transactions = store.transactions.filter(t => {
+      if (!allowed.includes(t.accountId)) return false;
+      const created = Date.parse(t.createdAt);
+      if (from.value !== null && created < from.value) return false;
+      if (to.value !== null && created > to.value) return false;
+      return true;
+    });
     res.json({ transactions: transactions.sort((a,b) => b.createdAt.localeCompare(a.createdAt)) });
   });
 

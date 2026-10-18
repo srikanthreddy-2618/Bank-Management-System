@@ -114,6 +114,10 @@ async function loadDashboard() {
       </div>`).join("");
     const options = accountSelectOptions();
     ["depositAccount","withdrawAccount","transferAccount"].forEach(id => $(id).innerHTML = options);
+    // Rebuild the history account filter but keep the user's current selection across refreshes.
+    const previousHistoryAccount = $("historyAccount").value;
+    $("historyAccount").innerHTML = '<option value="">All accounts</option>' + options;
+    if (state.accounts.some(a => a.id === previousHistoryAccount)) $("historyAccount").value = previousHistoryAccount;
     await loadTransactions();
     await loadBeneficiaries();
     await loadLoans();
@@ -127,11 +131,26 @@ async function loadDashboard() {
   }
 }
 
+function historyQuery() {
+  const params = new URLSearchParams();
+  const accountId = $("historyAccount").value;
+  const from = $("historyFrom").value;
+  const to = $("historyTo").value;
+  if (accountId) params.set("accountId", accountId);
+  // Convert the chosen calendar days to the user's local day boundaries so the range matches what they see.
+  if (from) params.set("from", new Date(from + "T00:00:00").toISOString());
+  if (to) params.set("to", new Date(to + "T23:59:59.999").toISOString());
+  const query = params.toString();
+  return query ? "?" + query : "";
+}
+
 async function loadTransactions() {
-  const data = await api("/api/transactions");
+  const query = historyQuery();
+  const data = await api("/api/transactions" + query);
+  const accountNumber = id => (state.accounts.find(a => a.id === id) || {}).accountNumber || id;
   $("transactionBody").innerHTML = data.transactions.length ? data.transactions.map(t => `
-    <tr><td>${new Date(t.createdAt).toLocaleString()}</td><td>${t.type}</td><td>₹${t.amount.toFixed(2)}</td><td>${t.status}</td><td>${escapeHtml(t.description)}</td></tr>`).join("")
-    : '<tr><td colspan="5">No transactions yet.</td></tr>';
+    <tr><td>${new Date(t.createdAt).toLocaleString()}</td><td>${escapeHtml(accountNumber(t.accountId))}</td><td>${t.type}</td><td>₹${t.amount.toFixed(2)}</td><td>${t.status}</td><td>${escapeHtml(t.description)}</td></tr>`).join("")
+    : `<tr><td colspan="6">${query ? "No transactions match the selected filters." : "No transactions yet."}</td></tr>`;
 }
 
 async function loadBeneficiaries() {
@@ -404,6 +423,18 @@ $("profileForm").onsubmit = async e => {
   } catch(e){ toast(e.message); }
 };
 $("refreshBtn").onclick = loadDashboard;
+$("historyFilterForm").onsubmit = async e => {
+  e.preventDefault();
+  if ($("historyFrom").value && $("historyTo").value && $("historyFrom").value > $("historyTo").value) {
+    toast("The From date must not be after the To date");
+    return;
+  }
+  try { await loadTransactions(); } catch(err) { toast(err.message); }
+};
+$("historyClear").onclick = async () => {
+  $("historyAccount").value = ""; $("historyFrom").value = ""; $("historyTo").value = "";
+  try { await loadTransactions(); } catch(err) { toast(err.message); }
+};
 $("logoutBtn").onclick = async () => {
   try { if (state.token) await api("/api/auth/logout", { method:"POST" }); } catch {}
   state.token = null; localStorage.removeItem("bmsToken"); state.pendingUserId = null; showLogin(); $("loginForm").classList.remove("hidden"); $("otpForm").classList.add("hidden"); toast("Logged out");

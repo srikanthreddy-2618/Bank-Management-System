@@ -697,3 +697,101 @@ test("successful, replayed and rejected transfers are audited without secrets or
   assert.equal(serialized.includes("123456"), false);
   assert.equal(serialized.includes("test-transfer-audit-001"), false, "raw idempotency keys must not be logged");
 });
+
+// ---- BMS-F-011 / issue #30: transaction history ----
+
+const HISTORY = "/api/transactions";
+
+async function history(base, token, query) {
+  const response = await get(base, HISTORY + query, token);
+  return { status: response.status, body: await response.json() };
+}
+
+test("history for an account returns only that account's entries and never the other party's row", async t => {
+  const { base } = await start(t);
+  const customerToken = await loginAs(base);
+  const staffToken = await loginAs(base, "staff@bms.local");
+  const transfer = await post(base, "/api/transactions/transfer", {
+    fromAccountId: "acc-1001", toAccountNumber: "1000002001", amount: 500
+  }, customerToken, { "Idempotency-Key": "test-history-scope-001" });
+  assert.equal(transfer.status, 201);
+
+  const selected = await history(base, customerToken, "?accountId=acc-1001");
+  assert.equal(selected.status, 200);
+  assert.equal(selected.body.transactions.length, 1);
+  assert.ok(selected.body.transactions.every(item => item.accountId === "acc-1001"));
+  assert.equal(JSON.stringify(selected.body).includes("25500"), false, "must not expose the other account's balance");
+
+  const all = await history(base, customerToken, "");
+  assert.ok(all.body.transactions.every(item => ["acc-1001", "acc-1002"].includes(item.accountId)));
+
+  // The receiving account still sees its own side of the transfer.
+  const receiving = await history(base, staffToken, "?accountId=acc-2001");
+  assert.equal(receiving.body.transactions.length, 1);
+  assert.equal(receiving.body.transactions[0].type, "TRANSFER_IN");
+});
+
+test("history selected by account separates a customer's own accounts", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const transfer = await post(base, "/api/transactions/transfer", {
+    fromAccountId: "acc-1001", toAccountNumber: "1000001002", amount: 200
+  }, token, { "Idempotency-Key": "test-history-own-001" });
+  assert.equal(transfer.status, 201);
+
+  const first = await history(base, token, "?accountId=acc-1001");
+  const second = await history(base, token, "?accountId=acc-1002");
+  assert.deepEqual(first.body.transactions.map(item => item.type), ["TRANSFER_OUT"]);
+  assert.deepEqual(second.body.transactions.map(item => item.type), ["TRANSFER_IN"]);
+});
+
+test("history date range is inclusive at both ends and excludes anything outside it", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const deposit = await post(base, "/api/transactions/deposit", {
+    accountId: "acc-1001", amount: 100
+  }, token, { "Idempotency-Key": "test-history-range-001" });
+  assert.equal(deposit.status, 201);
+  const created = (await deposit.json()).transaction.createdAt;
+  const at = Date.parse(created);
+  const iso = ms => new Date(ms).toISOString();
+  const account = "accountId=acc-1001";
+
+  const count = async query => (await history(base, token, "?" + account + query)).body.transactions.length;
+  assert.equal(await count("&from=" + created + "&to=" + created), 1, "exact boundaries are inclusive");
+  assert.equal(await count("&from=" + iso(at + 1)), 0, "from just after the entry excludes it");
+  assert.equal(await count("&to=" + iso(at - 1)), 0, "to just before the entry excludes it");
+  assert.equal(await count("&from=" + iso(at - 1000) + "&to=" + iso(at + 1000)), 1);
+  assert.equal(await count("&from=" + iso(at - 1000)), 1, "open-ended to");
+  assert.equal(await count("&to=" + iso(at + 1000)), 1, "open-ended from");
+  assert.equal(await count("&from=2020-01-01&to=2020-01-02"), 0, "a past date range returns nothing");
+
+  const day = created.slice(0, 10);
+  assert.equal(await count("&from=" + day + "&to=" + day), 1, "a date-only range covers the whole day");
+});
+
+test("invalid history filters are rejected with 400", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  const invalid = [
+    "?from=not-a-date",
+    "?to=2026-13-45",
+    "?from=2026-02-31",
+    "?from=2026-10-20&to=2026-10-10",
+    "?from=2026-10-01&from=2026-10-02",
+    "?to=1"
+  ];
+  for (const query of invalid) {
+    const response = await history(base, token, query);
+    assert.equal(response.status, 400, query + " should be rejected");
+    assert.equal(response.body.transactions, undefined);
+  }
+});
+
+test("history cannot be read for another customer's account or without logging in", async t => {
+  const { base } = await start(t);
+  const token = await loginAs(base);
+  assert.equal((await history(base, token, "?accountId=acc-2001")).status, 403);
+  const anonymous = await fetch(base + HISTORY + "?accountId=acc-1001");
+  assert.equal(anonymous.status, 401);
+});
