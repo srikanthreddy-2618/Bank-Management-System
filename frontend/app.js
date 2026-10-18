@@ -101,6 +101,7 @@ async function loadDashboard() {
     $("roleText").textContent = `${me.user.role} • KYC ${me.user.kycStatus}`;
     $("loanApplicationForm").classList.toggle("hidden", state.userRole !== "CUSTOMER");
     $("operationalReportsPanel").classList.toggle("hidden", state.userRole !== "STAFF");
+    $("auditTrailPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("profileName").value = me.user.name;
     $("profilePhone").value = me.user.phone;
 
@@ -273,6 +274,28 @@ async function loadLoans() {
   });
 }
 
+function auditQuery() {
+  const params = new URLSearchParams();
+  const result = $("auditResult").value;
+  const action = $("auditAction").value.trim().toUpperCase().replace(/\s+/g, "_");
+  const from = $("auditFrom").value;
+  const to = $("auditTo").value;
+  if (result) params.set("result", result);
+  if (action) params.set("action", action);
+  if (from) params.set("from", new Date(from + "T00:00:00").toISOString());
+  if (to) params.set("to", new Date(to + "T23:59:59.999").toISOString());
+  params.set("limit", "100");
+  return "?" + params.toString();
+}
+
+async function loadAuditTrail() {
+  const data = await api("/api/admin/audit" + auditQuery());
+  $("auditSummary").textContent = `Showing ${data.auditLogs.length} of ${data.total} matching records (newest first).`;
+  $("auditBody").innerHTML = data.auditLogs.length ? data.auditLogs.map(log => `
+    <tr><td>${new Date(log.timestamp).toLocaleString()}</td><td>${escapeHtml(log.userId || "—")}</td><td>${escapeHtml(log.action)}</td><td>${escapeHtml(log.result)}</td><td><small>${escapeHtml(JSON.stringify(log.metadata || {}))}</small></td></tr>`).join("")
+    : '<tr><td colspan="5">No audit records match the selected filters.</td></tr>';
+}
+
 async function loadOperationalReport() {
   const report = await api("/api/admin/reports/summary");
   $("operationalReportOutput").textContent = JSON.stringify(report, null, 2);
@@ -439,6 +462,14 @@ $("historyFilterForm").onsubmit = async e => {
     return;
   }
   try { await loadTransactions(); } catch(err) { toast(err.message); }
+};
+$("auditFilterForm").onsubmit = async e => {
+  e.preventDefault();
+  if ($("auditFrom").value && $("auditTo").value && $("auditFrom").value > $("auditTo").value) {
+    toast("The From date must not be after the To date");
+    return;
+  }
+  try { await loadAuditTrail(); } catch(err) { toast(err.message); }
 };
 $("historyClear").onclick = async () => {
   $("historyAccount").value = ""; $("historyFrom").value = ""; $("historyTo").value = "";

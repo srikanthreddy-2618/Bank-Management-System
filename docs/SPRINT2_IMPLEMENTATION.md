@@ -87,3 +87,11 @@ The API test suite includes loan application/approval, repayment balance and tra
 - A reason of 5-240 characters is required to reject or return an application and is optional on approval. The applicant sees the status and reason in their loan list and notification.
 - Only pending applications can be decided, so a repeated approval cannot disburse twice (`409`). Approval still requires a rate and an active account belonging to the applicant.
 - A returned application is closed with its reason; the applicant submits a new application with the corrections (there is no edit-and-resubmit flow yet). The operational report counts returned applications separately.
+
+## Audit trail — BMS-F-020 / Issue #39
+
+- Every audit record carries `id`, `userId`, `timestamp`, `action`, `result` (`SUCCESS` or `FAILURE`) and sanitized `metadata` (passwords, OTPs, tokens and secrets are never stored). Actions that record a refused, failed, blocked, denied or conflicting attempt (`*_REJECTED`, `*_FAILED`, `*_BLOCKED`, `*_DENIED`, `*_CONFLICT`) are `FAILURE`; everything else is `SUCCESS`. Records written before this change get the same result when read.
+- New events: `ACCESS_DENIED` (a role check refused a request: method, path and role are recorded) and `AUDIT_LOG_VIEWED` (who read the trail and with which filters).
+- `GET /api/admin/audit` (staff only) returns `{ auditLogs, total, limit, offset }`, newest first, with optional filters `userId`, `action` (exact, UPPER_CASE), `result`, `from`/`to` (inclusive, ISO date or timestamp), `limit` (1-1000, default 500) and `offset`. Invalid filters return `400`.
+- The staff dashboard has an Audit Trail panel (result, action and date filters). It loads only when the filter form is submitted, so routine dashboard refreshes do not flood the trail with `AUDIT_LOG_VIEWED` entries.
+- Retention and tamper-evidence are covered separately by issue #43 (BMS-NF-004).
