@@ -67,3 +67,27 @@ Sprint 1 QA can be marked complete only after:
 3. GitHub Actions is green.
 4. Test evidence is attached to the relevant issues/PRs.
 5. The final QA result is reviewed by the team.
+
+
+## Current GitHub backlog status
+
+The consolidated backlog is #20–#49. At the time of this QA update, the remaining open requirements are:
+
+| Issue | Requirement | QA status |
+|---|---|---|
+| #20 | BMS-F-001 Authentication | Implementation merged; manual browser acceptance pending |
+| #21 | BMS-F-002 OTP Verification | Implementation merged; manual browser acceptance pending |
+| #23 | BMS-F-004 Account Creation | Implementation merged; manual/staff acceptance pending |
+| #29 | BMS-F-010 Beneficiary Management | Implementation present; manual acceptance pending |
+| #31 | BMS-F-012 Account Statements | Not yet implemented/verified |
+| #34 | BMS-F-015 Repayment Schedule | Calculation is present in the loan flow; acceptance/UI verification pending |
+| #37 | BMS-F-018 User and Role Administration | Not yet fully implemented/verified |
+| #42 | BMS-NF-003 Data Encryption | Not yet fully satisfied; production-grade encryption evidence pending |
+| #45 | BMS-SR-001 TLS 1.2+ | Local demo does not terminate HTTPS/TLS; deployment evidence pending |
+| #46 | BMS-SR-002 Secure Password Hashing | Implementation merged; code/automated evidence present; final acceptance pending |
+
+Issues already closed in the consolidated backlog correspond to merged implementation work for the other Sprint 1/Sprint 2 requirements.
+
+## QA Lead next gate
+
+Do not mark the remaining requirements Done solely from source-code inspection. After local execution, the QA Lead should update the relevant issues with observed evidence, create defects for failures, and only then move the Project items to Done.
