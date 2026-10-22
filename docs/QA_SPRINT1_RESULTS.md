@@ -10,7 +10,7 @@ Sprint 1 QA covers authentication, OTP verification, customer profile/KYC, balan
 
 ## Test execution status
 
-The repository CI pipeline provides automated API coverage for core banking and security behavior. The latest `main` branch CI runs are passing.
+The repository CI pipeline provides automated API coverage for core banking and security behavior. The latest QA-branch CI run for this PR passed. The merged main branch also has passing CI runs.
 
 The following browser/local-manual checks must be executed on the team's development machine before marking them PASS:
 
@@ -28,6 +28,10 @@ The following browser/local-manual checks must be executed on the team's develop
 | RBAC | Customer denied staff-only operations | PENDING LOCAL |
 | Login lockout | Five failures cause temporary lockout | PENDING LOCAL |
 | Audit logging | Events recorded without sensitive credentials | PENDING LOCAL |
+
+## Automated evidence
+
+The current regression suite covers authentication/OTP behavior, account ownership, deposits, withdrawals, transfers, loans, reports, audit privacy/integrity and accessibility-related static checks. The CI workflow also runs the performance baseline. These automated results do not replace browser/manual acceptance testing.
 
 ## Security review checklist
 
