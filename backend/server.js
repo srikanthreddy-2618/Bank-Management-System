@@ -173,15 +173,18 @@ function loadStore() {
     fs.writeFileSync(DATA_FILE, serializeStore(initial));
     return initial;
   }
+  const raw = fs.readFileSync(DATA_FILE, "utf8");
   try {
-    const loaded = deserializeStore(fs.readFileSync(DATA_FILE, "utf8"));
+    const loaded = deserializeStore(raw);
     if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
     // Backward-compatible migration for older local demo files.
     if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
     if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
     if (!Array.isArray(loaded.loans)) loaded.loans = [];
     return loaded;
-  } catch {
+  } catch (error) {
+    // Never replace an encrypted store after a key/decryption failure.
+    if (raw.startsWith("enc:v1:")) throw error;
     const initial = seedStore();
     fs.writeFileSync(DATA_FILE, serializeStore(initial));
     return initial;
