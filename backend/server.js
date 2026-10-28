@@ -1086,9 +1086,9 @@ function createApp({ freshStore = false } = {}) {
     const phone = String(req.body?.phone || "").trim();
     const password = String(req.body?.password || "");
     const role = String(req.body?.role || "CUSTOMER").toUpperCase();
-    if (!/^\\S+@\\S+\\.\\S+$/.test(email)) return res.status(400).json({ error: "A valid email is required" });
+    if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: "A valid email is required" });
     if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Name must be between 2 and 120 characters" });
-    if (!/^\\d{7,15}$/.test(phone)) return res.status(400).json({ error: "Phone must contain 7-15 digits" });
+    if (!/^\d{7,15}$/.test(phone)) return res.status(400).json({ error: "Phone must contain 7-15 digits" });
     if (password.length < 8) return res.status(400).json({ error: "Password must contain at least 8 characters" });
     if (!["CUSTOMER", "STAFF"].includes(role)) return res.status(400).json({ error: "Role must be CUSTOMER or STAFF" });
     if (store.users.some(user => user.email.toLowerCase() === email)) return res.status(409).json({ error: "Email already exists" });
