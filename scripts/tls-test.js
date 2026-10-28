@@ -44,6 +44,7 @@ try {
         rejectUnauthorized: false,
         minVersion: "TLSv1.2"
       }, response => {
+        const protocol = response.socket?.getProtocol();
         let body = "";
         response.setEncoding("utf8");
         response.on("data", chunk => { body += chunk; });
@@ -51,7 +52,6 @@ try {
           try {
             if (response.statusCode !== 200) throw new Error("HTTPS health endpoint returned " + response.statusCode);
             if (!JSON.parse(body).status) throw new Error("Health response was invalid");
-            const protocol = response.socket.getProtocol();
             if (!["TLSv1.2", "TLSv1.3"].includes(protocol)) {
               throw new Error("Negotiated protocol " + protocol + " is below TLS 1.2");
             }
