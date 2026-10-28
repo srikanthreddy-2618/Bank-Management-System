@@ -18,6 +18,7 @@ const OTP = process.env.BMS_DEMO_OTP || "123456";
 const TRANSFER_LIMIT = Number(process.env.BMS_TRANSFER_LIMIT) > 0 ? Number(process.env.BMS_TRANSFER_LIMIT) : 200000;
 const JWT_SECRET = process.env.BMS_JWT_SECRET || crypto.randomBytes(32).toString("hex");
 const STORE_ENCRYPTION_KEY = process.env.BMS_STORE_ENCRYPTION_KEY || "";
+const MIN_STORE_KEY_LENGTH = 32;
 const TLS_KEY_FILE = process.env.BMS_TLS_KEY_FILE || "";
 const TLS_CERT_FILE = process.env.BMS_TLS_CERT_FILE || "";
 const TLS_CA_FILE = process.env.BMS_TLS_CA_FILE || "";
@@ -165,8 +166,27 @@ function deserializeStore(raw) {
   ]).toString("utf8"));
 }
 
+function requireStoreEncryption() {
+  if (!PERSISTENCE) return;
+  if (!STORE_ENCRYPTION_KEY) {
+    throw new Error("BMS_STORE_ENCRYPTION_KEY is required when persistence is enabled");
+  }
+  if (STORE_ENCRYPTION_KEY.length < MIN_STORE_KEY_LENGTH) {
+    throw new Error(`BMS_STORE_ENCRYPTION_KEY must be at least ${MIN_STORE_KEY_LENGTH} characters when persistence is enabled`);
+  }
+}
+
+function normalizeStore(loaded) {
+  if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
+  if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
+  if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
+  if (!Array.isArray(loaded.loans)) loaded.loans = [];
+  return loaded;
+}
+
 function loadStore() {
   if (!PERSISTENCE) return seedStore();
+  requireStoreEncryption();
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   if (!fs.existsSync(DATA_FILE)) {
     const initial = seedStore();
@@ -175,19 +195,17 @@ function loadStore() {
   }
   const raw = fs.readFileSync(DATA_FILE, "utf8");
   try {
-    const loaded = deserializeStore(raw);
-    if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
-    // Backward-compatible migration for older local demo files.
-    if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
-    if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
-    if (!Array.isArray(loaded.loans)) loaded.loans = [];
+    const loaded = normalizeStore(deserializeStore(raw));
+    // Existing academic demo JSON stores are migrated to encrypted-at-rest storage
+    // on the first encrypted startup. New writes are always encrypted.
+    if (!raw.startsWith("enc:v1:")) {
+      fs.writeFileSync(DATA_FILE, serializeStore(loaded));
+    }
     return loaded;
   } catch (error) {
     // Never replace an encrypted store after a key/decryption failure.
     if (raw.startsWith("enc:v1:")) throw error;
-    const initial = seedStore();
-    fs.writeFileSync(DATA_FILE, serializeStore(initial));
-    return initial;
+    throw new Error("Unable to load the persistent BMS store securely: " + error.message);
   }
 }
 
