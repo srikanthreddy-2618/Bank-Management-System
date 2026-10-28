@@ -32,7 +32,7 @@
 ### BMS-SR-001 — TLS 1.2+
 - Added optional HTTPS server startup using BMS_TLS_KEY_FILE, BMS_TLS_CERT_FILE and optional BMS_TLS_CA_FILE.
 - When certificate and key paths are supplied, the Node server uses HTTPS instead of HTTP.
-- A real certificate/key deployment and browser evidence are still required before claiming production TLS compliance.
+- CI now generates an ephemeral self-signed certificate and verifies an HTTPS health request negotiates TLS 1.2 or TLS 1.3. A real certificate/key deployment is still required for production/browser acceptance.
 
 ## Remaining deployment-specific work
 
