@@ -101,14 +101,6 @@ test("staff can create users, list users, change roles and create customer accou
   const createdUser = (await created.json()).user;
   assert.equal(createdUser.role, "CUSTOMER");
 
-  const roleChange = await request(base, "/api/admin/users/" + createdUser.id + "/role", {
-    method: "PATCH",
-    token: staffToken,
-    body: JSON.stringify({ role: "STAFF" })
-  });
-  assert.equal(roleChange.status, 200);
-  assert.equal((await roleChange.json()).user.role, "STAFF");
-
   const account = await request(base, "/api/accounts", {
     method: "POST",
     token: staffToken,
@@ -120,6 +112,14 @@ test("staff can create users, list users, change roles and create customer accou
   });
   assert.equal(account.status, 201);
   assert.equal((await account.json()).account.balance, 1000);
+
+  const roleChange = await request(base, "/api/admin/users/" + createdUser.id + "/role", {
+    method: "PATCH",
+    token: staffToken,
+    body: JSON.stringify({ role: "STAFF" })
+  });
+  assert.equal(roleChange.status, 200);
+  assert.equal((await roleChange.json()).user.role, "STAFF");
 });
 
 test("customers cannot access staff user administration", async t => {
