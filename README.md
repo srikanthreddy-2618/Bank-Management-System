@@ -58,7 +58,7 @@ Node.js API
    └── MySQL schema design (database/schema.sql)
 ```
 
-The architecture is aligned with the submitted SRS/SAD, with the local JSON store used to keep the academic demo easy to run. `database/schema.sql` preserves the MySQL-oriented design for the planned persistent deployment.
+The architecture is aligned with the submitted SRS/SAD, with the local JSON store used to keep the academic demo easy to run. When persistence is enabled, the JSON store is encrypted at rest with AES-256-GCM and requires `BMS_STORE_ENCRYPTION_KEY`. `database/schema.sql` preserves the MySQL-oriented design for the planned persistent deployment.
 
 ## Run locally
 
@@ -66,10 +66,12 @@ Prerequisites: Node.js 20+.
 
 ```bash
 npm install
+# PowerShell example: set a strong 32+ character key outside source control
+$env:BMS_STORE_ENCRYPTION_KEY="replace-with-a-strong-32-plus-character-secret"
 npm start
 ```
 
-Open **http://localhost:3000**
+When `BMS_PERSISTENCE=true` (the default), `BMS_STORE_ENCRYPTION_KEY` is required. The server refuses to start without it. Open **http://localhost:3000**.
 
 ### Demo customer
 
@@ -87,6 +89,7 @@ A second demo account is available for transfer testing:
 npm run check
 npm test
 npm run performance
+npm run tls:test
 ```
 
 ## Repository structure
