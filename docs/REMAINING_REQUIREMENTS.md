@@ -25,9 +25,12 @@
 - Added regression coverage for listing, creation, role changes, account creation and customer denial.
 
 ### BMS-NF-003 — Data Encryption
-- Added optional AES-256-GCM encryption for the local JSON persistence store using BMS_STORE_ENCRYPTION_KEY.
-- Existing plaintext demo stores remain backward-compatible when the key is not configured.
+- Persistent mode now requires BMS_STORE_ENCRYPTION_KEY with a minimum length of 32 characters.
+- The local JSON persistence store is encrypted at rest with AES-256-GCM.
+- Existing plaintext demo stores are automatically migrated to encrypted storage on the first secure startup.
+- Wrong-key/decryption failures never replace or reset the existing encrypted store.
 - The repository does not contain an encryption secret.
+- Automated regression tests cover missing/short keys, encrypted persistence, decryption, wrong-key protection and plaintext migration.
 
 ### BMS-SR-001 — TLS 1.2+
 - Added optional HTTPS server startup using BMS_TLS_KEY_FILE, BMS_TLS_CERT_FILE and optional BMS_TLS_CA_FILE.
@@ -37,7 +40,7 @@
 ## Remaining deployment-specific work
 
 - Provide and validate a real TLS certificate/key deployment.
-- Configure a strong encryption key outside source control.
+- Configure a strong encryption key outside source control for local/deployment runs.
 - Replace the local JSON store with transactional MySQL persistence for production.
 - Confirm stakeholder-configured transfer limits, audit retention period and exact performance threshold.
 - Complete manual acceptance and issue closure in GitHub after review.
