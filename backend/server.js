@@ -1275,6 +1275,7 @@ function startServer(port = PORT) {
   let server;
   if (useTls) {
     const tlsOptions = {
+      minVersion: "TLSv1.2",
       key: fs.readFileSync(TLS_KEY_FILE),
       cert: fs.readFileSync(TLS_CERT_FILE),
       ...(TLS_CA_FILE ? { ca: fs.readFileSync(TLS_CA_FILE) } : {})
