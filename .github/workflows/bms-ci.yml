@@ -35,6 +35,9 @@ jobs:
           BMS_PERFORMANCE_TARGET_MS: 2000
         run: npm run performance
 
+      - name: Validate HTTPS TLS 1.2+
+        run: npm run tls:test
+
       - name: Validate repository structure
         shell: bash
         run: |
