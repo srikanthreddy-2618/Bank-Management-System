@@ -86,8 +86,17 @@ test("legacy plaintext store is migrated to encrypted storage when the key is co
   const dataFile = path.join(tempDir, "db.json");
 
   try {
-    const serverModule = require("../backend/server");
-    const plainStore = serverModule.seedStore();
+    const plainStore = {
+      users: [{ id: "usr-demo", email: "customer@bms.local", name: "Demo Customer" }],
+      accounts: [],
+      beneficiaries: [],
+      loans: [],
+      transactions: [],
+      notifications: [],
+      auditLogs: [],
+      otps: {},
+      idempotencyKeys: {}
+    };
     fs.writeFileSync(dataFile, JSON.stringify(plainStore, null, 2));
 
     const migrated = runServerLoad({ BMS_DATA_FILE: dataFile });
