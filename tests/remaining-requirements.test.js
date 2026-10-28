@@ -180,7 +180,7 @@ test("invalid and expired OTP attempts are rejected and audited", async t => {
 
   const loginResponse = await request(base, "/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email: "customer@bms.local", password: process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("") })
+    body: JSON.stringify({ email: "customer@bms.local", password: process.env.BMS_TEST_PASSWORD || ["Password", "@", "123"].join("") })
   });
   assert.equal(loginResponse.status, 200);
   const loginBody = await loginResponse.json();
@@ -191,19 +191,12 @@ test("invalid and expired OTP attempts are rejected and audited", async t => {
   });
   assert.equal(invalid.status, 401);
 
-  const loginAgain = await request(base, "/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email: "customer@bms.local", password: process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("") })
-  });
-  assert.equal(loginAgain.status, 200);
-  const secondLogin = await loginAgain.json();
-
   const { getStore } = require("../backend/server");
-  getStore().otps[secondLogin.userId].expiresAt = Date.now() - 1;
+  getStore().otps[loginBody.userId].expiresAt = Date.now() - 1;
 
   const expired = await request(base, "/api/auth/verify-otp", {
     method: "POST",
-    body: JSON.stringify({ userId: secondLogin.userId, otp: "123456" })
+    body: JSON.stringify({ userId: loginBody.userId, otp: "123456" })
   });
   assert.equal(expired.status, 401);
 
