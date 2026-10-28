@@ -115,6 +115,7 @@ async function loadDashboard() {
     $("loanApplicationForm").classList.toggle("hidden", state.userRole !== "CUSTOMER");
     $("operationalReportsPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("auditTrailPanel").classList.toggle("hidden", state.userRole !== "STAFF");
+    $("userAdminPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("profileName").value = me.user.name;
     $("profilePhone").value = me.user.phone;
 
@@ -127,7 +128,7 @@ async function loadDashboard() {
         <small>A/C ${a.accountNumber}</small>
       </div>`).join("");
     const options = accountSelectOptions();
-    ["depositAccount","withdrawAccount","transferAccount"].forEach(id => $(id).innerHTML = options);
+    ["depositAccount","withdrawAccount","transferAccount","statementAccount"].forEach(id => $(id).innerHTML = options);
     // Rebuild the history account filter but keep the user's current selection across refreshes.
     const previousHistoryAccount = $("historyAccount").value;
     $("historyAccount").innerHTML = '<option value="">All accounts</option>' + options;
@@ -135,7 +136,10 @@ async function loadDashboard() {
     await loadTransactions();
     await loadBeneficiaries();
     await loadLoans();
-    if (state.userRole === "STAFF") await loadOperationalReport();
+    if (state.userRole === "STAFF") {
+      await loadOperationalReport();
+      await loadAdminUsers();
+    }
     const health = await api("/api/health");
     $("apiStatus").textContent = `API ${health.status.toUpperCase()}`;
     showDashboard();
@@ -182,6 +186,65 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 }
 
+async function loadAccountStatement() {
+  const accountId = $("statementAccount").value;
+  if (!accountId) throw new Error("Select an account");
+  const params = new URLSearchParams({ accountId });
+  const from = $("statementFrom").value;
+  const to = $("statementTo").value;
+  if (from) params.set("from", new Date(from + "T00:00:00").toISOString());
+  if (to) params.set("to", new Date(to + "T23:59:59.999").toISOString());
+  if (from && to && from > to) throw new Error("The From date must not be after the To date");
+
+  const data = await api("/api/accounts/" + encodeURIComponent(accountId) + "/statement?" + params.toString());
+  const statement = data.statement;
+  $("statementSummary").textContent =
+    `Opening ₹${statement.openingBalance.toFixed(2)} • Credits ₹${statement.totalCredits.toFixed(2)} • Debits ₹${statement.totalDebits.toFixed(2)} • Closing ₹${statement.closingBalance.toFixed(2)}`;
+  $("statementBody").innerHTML = statement.transactions.length
+    ? statement.transactions.map(t => {
+        const credit = ["DEPOSIT","TRANSFER_IN","LOAN_DISBURSEMENT"].includes(t.type) ? Number(t.amount) : 0;
+        const debit = ["WITHDRAWAL","TRANSFER_OUT","LOAN_REPAYMENT"].includes(t.type) ? Number(t.amount) : 0;
+        return `<tr><td>${new Date(t.createdAt).toLocaleString()}</td><td>${escapeHtml(t.type)}</td><td>₹${credit.toFixed(2)}</td><td>₹${debit.toFixed(2)}</td><td>₹${Number(t.balanceAfter).toFixed(2)}</td><td>${escapeHtml(t.description || "")}</td></tr>`;
+      }).join("")
+    : '<tr><td colspan="6">No transactions in the selected period.</td></tr>';
+}
+
+async function loadAdminUsers() {
+  const data = await api("/api/admin/users");
+  const customers = data.users.filter(user => user.role === "CUSTOMER");
+  $("adminAccountCustomer").innerHTML = customers.length
+    ? customers.map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)} — ${escapeHtml(user.email)}</option>`).join("")
+    : '<option value="">No customers available</option>';
+
+  $("adminUserBody").innerHTML = data.users.length
+    ? data.users.map(user => {
+        const locked = user.lockedUntil ? new Date(user.lockedUntil).toLocaleString() : "—";
+        const roleOptions = `<option value="CUSTOMER" ${user.role === "CUSTOMER" ? "selected" : ""}>CUSTOMER</option><option value="STAFF" ${user.role === "STAFF" ? "selected" : ""}>STAFF</option>`;
+        const action = user.id === "usr-staff-001" || user.id === "usr-customer-001"
+          ? `<select data-role-user="${escapeHtml(user.id)}">${roleOptions}</select>`
+          : `<select data-role-user="${escapeHtml(user.id)}">${roleOptions}</select>`;
+        return `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${action}</td><td>${escapeHtml(user.kycStatus)}</td><td>${Number(user.accountCount)}</td><td>${escapeHtml(locked)}</td><td><button type="button" class="secondary" data-save-role="${escapeHtml(user.id)}">Save role</button></td></tr>`;
+      }).join("")
+    : '<tr><td colspan="7">No users found.</td></tr>';
+
+  document.querySelectorAll("[data-save-role]").forEach(button => {
+    button.onclick = async () => {
+      const userId = button.dataset.saveRole;
+      const role = document.querySelector(`[data-role-user="${userId}"]`).value;
+      try {
+        await api("/api/admin/users/" + encodeURIComponent(userId) + "/role", {
+          method: "PATCH",
+          body: JSON.stringify({ role })
+        });
+        await loadAdminUsers();
+        toast("User role updated");
+      } catch (error) {
+        toastError(error.message);
+      }
+    };
+  });
+}
+
 async function loadLoans() {
   const data = await api("/api/loans");
   state.loans = data.loans || [];
@@ -223,7 +286,7 @@ async function loadLoans() {
       <td><span>${escapeHtml(loan.purpose || "")}</span><br><small>${escapeHtml(loan.id)}</small></td>
       <td>${escapeHtml(loan.status)}${loan.decisionReason ? `<br><small>Reason: ${escapeHtml(loan.decisionReason)}</small>` : ""}</td>
       <td>${loan.repaymentAmount == null ? "—" : Number(loan.repaymentAmount).toFixed(2)}</td>
-      <td>${loan.outstandingBalance == null ? "—" : Number(loan.outstandingBalance).toFixed(2)}</td>
+      <td>${loan.outstandingBalance == null ? "—" : Number(loan.outstandingBalance).toFixed(2)}${Array.isArray(loan.repaymentSchedule) && loan.repaymentSchedule.length ? `<br><details><summary>Schedule</summary><small>${loan.repaymentSchedule.map(item => `#${item.installmentNumber}: ₹${Number(item.amount).toFixed(2)}`).join(" • ")}</small></details>` : ""}</td>
       <td>${action}</td>
     </tr>`;
   }).join("");
@@ -438,6 +501,57 @@ $("refreshLoansBtn").onclick = async () => {
 $("refreshReportBtn").onclick = async () => {
   try { await loadOperationalReport(); toast("Operational report refreshed"); }
   catch (error) { $("operationalReportOutput").textContent = error.message; }
+};
+$("statementBtn").onclick = async () => {
+  try { await loadAccountStatement(); toast("Account statement generated"); }
+  catch (error) { toastError(error.message); }
+};
+$("refreshUsersBtn").onclick = async () => {
+  try { await loadAdminUsers(); toast("Users refreshed"); }
+  catch (error) { toastError(error.message); }
+};
+$("adminUserForm").onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await api("/api/admin/users", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("adminUserName").value.trim(),
+        email: $("adminUserEmail").value.trim(),
+        phone: $("adminUserPhone").value.trim(),
+        password: $("adminUserPassword").value,
+        role: $("adminUserRole").value
+      })
+    });
+    event.target.reset();
+    await loadAdminUsers();
+    $("adminUserMessage").textContent = "User created successfully.";
+    toast("User created");
+  } catch (error) {
+    $("adminUserMessage").textContent = error.message;
+    toastError(error.message);
+  }
+};
+$("adminAccountForm").onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await api("/api/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        userId: $("adminAccountCustomer").value,
+        type: $("adminAccountType").value,
+        initialDeposit: Number($("adminAccountInitialDeposit").value || 0)
+      })
+    });
+    event.target.reset();
+    $("adminAccountInitialDeposit").value = "0";
+    $("adminUserMessage").textContent = "Account created successfully.";
+    await loadAdminUsers();
+    toast("Account created");
+  } catch (error) {
+    $("adminUserMessage").textContent = error.message;
+    toastError(error.message);
+  }
 };
 
 $("loginForm").onsubmit = login;
