@@ -184,6 +184,13 @@
             <tbody id="adminUserBody"></tbody>
           </table>
         </div>
+        <form id="adminAccountForm" class="grid">
+          <h4>Account Creation</h4>
+          <label>Customer<select id="adminAccountCustomer"></select></label>
+          <label>Account type<select id="adminAccountType"><option value="SAVINGS">Savings</option><option value="CURRENT">Current</option></select></label>
+          <label>Initial deposit (₹)<input id="adminAccountInitialDeposit" type="number" min="0" step="0.01" value="0"></label>
+          <button type="submit">Create account</button>
+        </form>
         <p id="adminUserMessage" class="message" aria-live="polite"></p>
       </section>
 
