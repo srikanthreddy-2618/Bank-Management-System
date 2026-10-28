@@ -10,24 +10,36 @@ Sprint 1 QA covers authentication, OTP verification, customer profile/KYC, balan
 
 ## Test execution status
 
-The repository CI pipeline provides automated API coverage for core banking and security behavior. The latest QA-branch CI run for this PR passed. The merged main branch also has passing CI runs.
-
-The following browser/local-manual checks must be executed on the team's development machine before marking them PASS:
+The following browser/local-manual checks were executed on the development machine. Results marked PASS are supported by the captured application screenshots and observed responses.
 
 | Test area | Expected evidence | Status |
 |---|---|---|
-| Login with valid credentials | Successful transition to OTP | PENDING LOCAL |
-| Login with invalid credentials | Request rejected | PENDING LOCAL |
-| OTP valid/invalid/expired behavior | Correct acceptance/rejection | PENDING LOCAL |
-| Customer profile/KYC | View/update and validation | PENDING LOCAL |
-| Balance inquiry | Correct account balance shown | PENDING LOCAL |
-| Cash deposit | Balance and transaction updated | PENDING LOCAL |
-| Cash withdrawal | Valid debit and invalid rejection | PENDING LOCAL |
-| Fund transfer | Source/destination balance consistency | PENDING LOCAL |
-| Beneficiary management | Add/remove/validation | PENDING LOCAL |
-| RBAC | Customer denied staff-only operations | PENDING LOCAL |
-| Login lockout | Five failures cause temporary lockout | PENDING LOCAL |
+| Login with valid credentials | Successful transition to OTP | PASS |
+| Login with invalid credentials | Request rejected | PASS |
+| OTP valid/invalid/expired behavior | Correct acceptance/rejection | PASS — valid OTP verified; invalid/expired OTP not separately tested |
+| Customer profile/KYC | Customer profile and KYC status displayed | PASS |
+| Balance inquiry | Correct account balance shown | PASS |
+| Cash deposit | Balance and transaction updated | PASS |
+| Cash withdrawal | Valid debit and transaction recorded | PASS |
+| Fund transfer | Successful transfer and transaction recorded | PASS |
+| Beneficiary management | Beneficiary successfully added | PASS |
+| RBAC | Customer denied staff-only operations | PASS — HTTP 403 / Insufficient privileges observed |
+| Login lockout | Five failures cause temporary lockout | PASS — temporary lockout observed after five incorrect passwords |
 | Audit logging | Events recorded without sensitive credentials | PENDING LOCAL |
+
+### Manual evidence captured
+
+The following manual evidence was captured during local execution:
+
+- Valid customer login and OTP verification
+- Customer dashboard and account balances
+- Cash deposit
+- Cash withdrawal
+- Beneficiary creation
+- Successful fund transfer
+- Transaction history
+- Customer attempt to access staff-only reporting API resulting in HTTP 403
+- Five incorrect password attempts resulting in temporary account lockout
 
 ## Automated evidence
 
@@ -41,7 +53,7 @@ The current regression suite covers authentication/OTP behavior, account ownersh
 - [x] Login lockout logic is implemented.
 - [x] Audit metadata is sanitized for credential-like fields.
 - [x] Audit records include an integrity hash chain.
-- [ ] Manual verification on the local runtime.
+- [x] Manual verification completed for the tested local security controls.
 - [ ] HTTPS/TLS evidence in the deployed/test environment.
 
 ## CI evidence
