@@ -27,7 +27,7 @@ async function request(base, path, options = {}) {
 }
 
 async function login(base, email) {
-  const password = "Password@123";
+  const password = process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("");
   const loginResponse = await request(base, "/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password })
@@ -172,4 +172,47 @@ test("approved loans expose a complete installment schedule", async t => {
   assert.equal(loan.repaymentSchedule[0].installmentNumber, 1);
   assert.equal(loan.repaymentSchedule[11].installmentNumber, 12);
   assert.equal(loan.repaymentSchedule.at(-1).outstandingAfter, 0);
+});
+
+
+test("invalid and expired OTP attempts are rejected and audited", async t => {
+  const { base } = await start(t);
+
+  const loginResponse = await request(base, "/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email: "customer@bms.local", password: process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("") })
+  });
+  assert.equal(loginResponse.status, 200);
+  const loginBody = await loginResponse.json();
+
+  const invalid = await request(base, "/api/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ userId: loginBody.userId, otp: "000000" })
+  });
+  assert.equal(invalid.status, 401);
+
+  const loginAgain = await request(base, "/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email: "customer@bms.local", password: process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("") })
+  });
+  assert.equal(loginAgain.status, 200);
+  const secondLogin = await loginAgain.json();
+
+  const { getStore } = require("../backend/server");
+  getStore().otps[secondLogin.userId].expiresAt = Date.now() - 1;
+
+  const expired = await request(base, "/api/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ userId: secondLogin.userId, otp: "123456" })
+  });
+  assert.equal(expired.status, 401);
+
+  const staffToken = await login(base, "staff@bms.local");
+  const audit = await request(base, "/api/admin/audit?action=OTP_VERIFICATION_FAILED&limit=20", { token: staffToken });
+  assert.equal(audit.status, 200);
+  const logs = (await audit.json()).auditLogs;
+  assert.ok(logs.some(log => log.metadata?.reason === "INVALID_OTP"));
+  assert.ok(logs.some(log => log.metadata?.reason === "OTP_EXPIRED"));
+  const serialized = JSON.stringify(logs);
+  assert.equal(serialized.includes("123456"), false);
 });
