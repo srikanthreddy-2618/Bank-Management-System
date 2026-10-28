@@ -27,7 +27,7 @@ async function request(base, path, options = {}) {
 }
 
 async function login(base, email) {
-  const password = process.env.BMS_TEST_PASSWORD || ["Password", "123"].join("");
+  const password = process.env.BMS_TEST_PASSWORD || ["Password", "@", "123"].join("");
   const loginResponse = await request(base, "/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password })
