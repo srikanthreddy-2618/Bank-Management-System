@@ -99,6 +99,23 @@
         </div>
       </section>
 
+      <section class="panel" id="statementPanel">
+        <div class="section-head"><h3>Account Statement</h3><button id="statementBtn" type="button">Generate statement</button></div>
+        <form id="statementForm" class="history-filter">
+          <label>Account<select id="statementAccount"></select></label>
+          <label>From<input id="statementFrom" type="date"></label>
+          <label>To<input id="statementTo" type="date"></label>
+        </form>
+        <p id="statementSummary" class="muted" aria-live="polite">No statement generated yet.</p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Account statement table">
+          <table>
+            <caption class="sr-only">Generated account statement</caption>
+            <thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Credit</th><th scope="col">Debit</th><th scope="col">Balance</th><th scope="col">Description</th></tr></thead>
+            <tbody id="statementBody"><tr><td colspan="6">Generate a statement to view transactions.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="panel" id="loansPanel">
         <div class="section-head"><h3>Loans</h3><button id="refreshLoansBtn" class="secondary" type="button">Refresh loans</button></div>
         <form id="loanApplicationForm">
@@ -148,6 +165,33 @@
         <div class="section-head"><h3>Operational Reports (Staff)</h3><button id="refreshReportBtn" class="secondary" type="button">Refresh report</button></div>
         <p class="muted">Aggregated metrics from the current local demo store.</p>
         <pre id="operationalReportOutput" class="report-output">Report not loaded.</pre>
+      </section>
+
+      <section class="panel hidden" id="userAdminPanel">
+        <div class="section-head"><h3>User &amp; Role Administration (Staff)</h3><button id="refreshUsersBtn" class="secondary" type="button">Refresh users</button></div>
+        <form id="adminUserForm" class="grid">
+          <label>Name<input id="adminUserName" required minlength="2" maxlength="120"></label>
+          <label>Email<input id="adminUserEmail" type="email" required></label>
+          <label>Phone<input id="adminUserPhone" type="tel" required pattern="[0-9]{7,15}"></label>
+          <label>Temporary password<input id="adminUserPassword" type="password" minlength="8" required autocomplete="new-password"></label>
+          <label>Role<select id="adminUserRole"><option value="CUSTOMER">Customer</option><option value="STAFF">Staff</option></select></label>
+          <button type="submit">Create user</button>
+        </form>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="User administration table">
+          <table>
+            <caption class="sr-only">Bank users and roles</caption>
+            <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Role</th><th scope="col">KYC</th><th scope="col">Accounts</th><th scope="col">Locked until</th><th scope="col">Action</th></tr></thead>
+            <tbody id="adminUserBody"></tbody>
+          </table>
+        </div>
+        <form id="adminAccountForm" class="grid">
+          <h4>Account Creation</h4>
+          <label>Customer<select id="adminAccountCustomer"></select></label>
+          <label>Account type<select id="adminAccountType"><option value="SAVINGS">Savings</option><option value="CURRENT">Current</option></select></label>
+          <label>Initial deposit (₹)<input id="adminAccountInitialDeposit" type="number" min="0" step="0.01" value="0"></label>
+          <button type="submit">Create account</button>
+        </form>
+        <p id="adminUserMessage" class="message" aria-live="polite"></p>
       </section>
 
       <section class="panel">

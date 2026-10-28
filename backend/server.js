@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const crypto = require("crypto");
 require("dotenv").config();
 
@@ -16,6 +17,10 @@ const OTP = process.env.BMS_DEMO_OTP || "123456";
 // Per-transfer limit. The SRS leaves the value to stakeholders, so this default is provisional.
 const TRANSFER_LIMIT = Number(process.env.BMS_TRANSFER_LIMIT) > 0 ? Number(process.env.BMS_TRANSFER_LIMIT) : 200000;
 const JWT_SECRET = process.env.BMS_JWT_SECRET || crypto.randomBytes(32).toString("hex");
+const STORE_ENCRYPTION_KEY = process.env.BMS_STORE_ENCRYPTION_KEY || "";
+const TLS_KEY_FILE = process.env.BMS_TLS_KEY_FILE || "";
+const TLS_CERT_FILE = process.env.BMS_TLS_CERT_FILE || "";
+const TLS_CA_FILE = process.env.BMS_TLS_CA_FILE || "";
 
 function now() {
   return new Date().toISOString();
@@ -133,25 +138,55 @@ function seedStore() {
   };
 }
 
+function storeCipherKey() {
+  return crypto.createHash("sha256").update(STORE_ENCRYPTION_KEY).digest();
+}
+
+function serializeStore(value) {
+  const plaintext = JSON.stringify(value, null, 2);
+  if (!STORE_ENCRYPTION_KEY) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", storeCipherKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return ["enc:v1", iv.toString("hex"), tag.toString("hex"), encrypted.toString("base64")].join(":");
+}
+
+function deserializeStore(raw) {
+  if (!raw.startsWith("enc:v1:")) return JSON.parse(raw);
+  if (!STORE_ENCRYPTION_KEY) throw new Error("BMS_STORE_ENCRYPTION_KEY is required to decrypt the configured data store");
+  const [, version, ivHex, tagHex, payload] = raw.split(":");
+  if (version !== "v1" || !ivHex || !tagHex || !payload) throw new Error("Invalid encrypted BMS data store");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", storeCipherKey(), Buffer.from(ivHex, "hex"));
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  return JSON.parse(Buffer.concat([
+    decipher.update(Buffer.from(payload, "base64")),
+    decipher.final()
+  ]).toString("utf8"));
+}
+
 function loadStore() {
   if (!PERSISTENCE) return seedStore();
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   if (!fs.existsSync(DATA_FILE)) {
     const initial = seedStore();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    fs.writeFileSync(DATA_FILE, serializeStore(initial));
     return initial;
   }
+  const raw = fs.readFileSync(DATA_FILE, "utf8");
   try {
-    const loaded = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    const loaded = deserializeStore(raw);
     if (!loaded || typeof loaded !== "object") throw new Error("Invalid BMS data store");
     // Backward-compatible migration for older local demo files.
     if (!loaded.idempotencyKeys || typeof loaded.idempotencyKeys !== "object") loaded.idempotencyKeys = {};
     if (!loaded.otps || typeof loaded.otps !== "object") loaded.otps = {};
     if (!Array.isArray(loaded.loans)) loaded.loans = [];
     return loaded;
-  } catch {
+  } catch (error) {
+    // Never replace an encrypted store after a key/decryption failure.
+    if (raw.startsWith("enc:v1:")) throw error;
     const initial = seedStore();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    fs.writeFileSync(DATA_FILE, serializeStore(initial));
     return initial;
   }
 }
@@ -163,7 +198,7 @@ function saveStore() {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
   // Atomic rename reduces the chance of leaving a partially written JSON store.
   const tempFile = DATA_FILE + ".tmp";
-  fs.writeFileSync(tempFile, JSON.stringify(store, null, 2));
+  fs.writeFileSync(tempFile, serializeStore(store));
   fs.renameSync(tempFile, DATA_FILE);
 }
 
@@ -516,6 +551,8 @@ function createApp({ freshStore = false } = {}) {
     let disbursementAccount = null;
     let disbursementTransaction = null;
     let annualRatePercent = null;
+    let repaymentSchedule = [];
+
 
     if (decision === "APPROVED") {
       annualRatePercent = Number(req.body?.annualRatePercent ?? 0);
@@ -537,12 +574,26 @@ function createApp({ freshStore = false } = {}) {
       repaymentAmount = Math.round(payment * 100) / 100;
       // Track the sum of rounded monthly installments (including interest).
       outstandingBalance = Math.round(repaymentAmount * loan.tenureMonths * 100) / 100;
+      let runningBalance = outstandingBalance;
+      repaymentSchedule = Array.from({ length: loan.tenureMonths }, (_, index) => {
+        const installment = index === loan.tenureMonths - 1
+          ? Math.round(runningBalance * 100) / 100
+          : repaymentAmount;
+        runningBalance = Math.max(0, Math.round((runningBalance - installment) * 100) / 100);
+        return {
+          installmentNumber: index + 1,
+          dueMonth: index + 1,
+          amount: installment,
+          outstandingAfter: runningBalance
+        };
+      });
     }
 
     loan.status = decision;
     loan.annualRatePercent = annualRatePercent;
     loan.repaymentAmount = repaymentAmount;
     loan.outstandingBalance = outstandingBalance;
+    loan.repaymentSchedule = repaymentSchedule;
     loan.decisionAt = now();
     loan.decidedBy = req.user.id;
     loan.decisionReason = reason || null;
@@ -705,6 +756,59 @@ function createApp({ freshStore = false } = {}) {
       return true;
     });
     res.json({ transactions: transactions.sort((a,b) => b.createdAt.localeCompare(a.createdAt)) });
+  });
+
+  app.get("/api/accounts/:id/statement", authRequired, (req, res) => {
+    const account = store.accounts.find(item => item.id === req.params.id);
+    if (!account) return res.status(404).json({ error: "Account not found" });
+    if (req.user.role !== "STAFF" && account.userId !== req.user.id) {
+      audit("ACCESS_DENIED", req.user.id, { method: req.method, path: "/api/accounts/:id/statement", role: req.user.role });
+      return res.status(403).json({ error: "Unauthorized account" });
+    }
+
+    const from = parseHistoryBoundary(req.query.from, false);
+    const to = parseHistoryBoundary(req.query.to, true);
+    if (from.error || to.error) return res.status(400).json({ error: "from and to must be ISO dates (YYYY-MM-DD) or ISO timestamps" });
+    if (from.value !== null && to.value !== null && from.value > to.value) return res.status(400).json({ error: "from must not be after to" });
+
+    const signedAmount = transaction => (
+      ["WITHDRAWAL", "TRANSFER_OUT", "LOAN_REPAYMENT"].includes(transaction.type)
+        ? -Number(transaction.amount || 0)
+        : Number(transaction.amount || 0)
+    );
+    const all = store.transactions
+      .filter(transaction => transaction.accountId === account.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const filtered = all.filter(transaction => {
+      const created = Date.parse(transaction.createdAt);
+      return (from.value === null || created >= from.value) && (to.value === null || created <= to.value);
+    });
+
+    let openingBalance = all.length ? Math.round((all[0].balanceAfter - signedAmount(all[0])) * 100) / 100 : Number(account.balance || 0);
+    if (from.value !== null) {
+      const before = all.filter(transaction => Date.parse(transaction.createdAt) < from.value).at(-1);
+      openingBalance = before
+        ? Number(before.balanceAfter)
+        : (filtered[0] ? Math.round((filtered[0].balanceAfter - signedAmount(filtered[0])) * 100) / 100 : Number(account.balance || 0));
+    }
+
+    const credits = filtered.filter(t => signedAmount(t) >= 0).reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const debits = filtered.filter(t => signedAmount(t) < 0).reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const closingBalance = filtered.length ? Number(filtered[filtered.length - 1].balanceAfter) : openingBalance;
+
+    res.json({
+      statement: {
+        generatedAt: now(),
+        account: publicAccount(account),
+        period: { from: from.value === null ? null : new Date(from.value).toISOString(), to: to.value === null ? null : new Date(to.value).toISOString() },
+        openingBalance: Math.round(openingBalance * 100) / 100,
+        totalCredits: Math.round(credits * 100) / 100,
+        totalDebits: Math.round(debits * 100) / 100,
+        closingBalance: Math.round(closingBalance * 100) / 100,
+        transactions: filtered.reverse()
+      }
+    });
+    audit("ACCOUNT_STATEMENT_GENERATED", req.user.id, { accountId: account.id });
   });
 
   app.post("/api/transactions/deposit", authRequired, (req, res) => {
@@ -969,6 +1073,61 @@ function createApp({ freshStore = false } = {}) {
     res.json({ notifications: store.notifications.filter(n => n.userId === req.user.id) });
   });
 
+  app.get("/api/admin/users", authRequired, requireRole("STAFF"), (_req, res) => {
+    const users = store.users.map(user => ({
+      ...publicUser(user),
+      createdAt: user.createdAt,
+      accountCount: store.accounts.filter(account => account.userId === user.id).length,
+      lockedUntil: user.lockedUntil || null
+    }));
+    res.json({ users });
+  });
+
+  app.post("/api/admin/users", authRequired, requireRole("STAFF"), (req, res) => {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const name = String(req.body?.name || "").trim();
+    const phone = String(req.body?.phone || "").trim();
+    const password = String(req.body?.password || "");
+    const role = String(req.body?.role || "CUSTOMER").toUpperCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: "A valid email is required" });
+    if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Name must be between 2 and 120 characters" });
+    if (!/^\d{7,15}$/.test(phone)) return res.status(400).json({ error: "Phone must contain 7-15 digits" });
+    if (password.length < 8) return res.status(400).json({ error: "Password must contain at least 8 characters" });
+    if (!["CUSTOMER", "STAFF"].includes(role)) return res.status(400).json({ error: "Role must be CUSTOMER or STAFF" });
+    if (store.users.some(user => user.email.toLowerCase() === email)) return res.status(409).json({ error: "Email already exists" });
+
+    const passwordRecord = hashPassword(password);
+    const user = {
+      id: id("usr-"),
+      email,
+      name,
+      role,
+      phone,
+      failedAttempts: 0,
+      lockedUntil: null,
+      password: passwordRecord,
+      kycStatus: "PENDING",
+      createdAt: now()
+    };
+    store.users.push(user);
+    saveStore();
+    audit("ADMIN_USER_CREATED", req.user.id, { targetUserId: user.id, role });
+    return res.status(201).json({ user: publicUser(user) });
+  });
+
+  app.patch("/api/admin/users/:id/role", authRequired, requireRole("STAFF"), (req, res) => {
+    const user = store.users.find(item => item.id === req.params.id);
+    const role = String(req.body?.role || "").toUpperCase();
+    if (!user) return res.status(404).json({ error: "User not found" });
+    if (user.id === req.user.id) return res.status(400).json({ error: "You cannot change your own role" });
+    if (!["CUSTOMER", "STAFF"].includes(role)) return res.status(400).json({ error: "Role must be CUSTOMER or STAFF" });
+    const previousRole = user.role;
+    user.role = role;
+    saveStore();
+    audit("ADMIN_USER_ROLE_CHANGED", req.user.id, { targetUserId: user.id, fromRole: previousRole, toRole: role });
+    return res.json({ user: publicUser(user) });
+  });
+
   app.get("/api/admin/reports/summary", authRequired, requireRole("STAFF"), (req, res) => {
     const accounts = store.accounts || [];
     const transactions = store.transactions || [];
@@ -1112,10 +1271,22 @@ function createApp({ freshStore = false } = {}) {
 
 function startServer(port = PORT) {
   const app = createApp();
-  const server = http.createServer(app);
+  const useTls = Boolean(TLS_KEY_FILE && TLS_CERT_FILE);
+  let server;
+  if (useTls) {
+    const tlsOptions = {
+      key: fs.readFileSync(TLS_KEY_FILE),
+      cert: fs.readFileSync(TLS_CERT_FILE),
+      ...(TLS_CA_FILE ? { ca: fs.readFileSync(TLS_CA_FILE) } : {})
+    };
+    server = https.createServer(tlsOptions, app);
+  } else {
+    server = http.createServer(app);
+  }
   return new Promise(resolve => {
     server.listen(port, "0.0.0.0", () => {
-      console.log(`BMS server running on port ${server.address().port}`);
+      const protocol = useTls ? "https" : "http";
+      console.log(`BMS server running on ${protocol}://0.0.0.0:${server.address().port}`);
       resolve(server);
     });
   });
