@@ -21,7 +21,9 @@ This folder contains the screenshots collected as evidence for the Bank Manageme
 | 13 | `13_invalid_transfer.png` | Invalid/rejected transfer |
 | 14 | `14_remove_beneficiary.png` | Beneficiary removal |
 | 15 | `15_TLS_1.3_Validation.png` | Automated TLS 1.3 validation |
-| 16 | `16_TLS_HTTPS_Browser_Evidence.png` | HTTPS browser evidence using `https://localhost:3000` |
+| 16 | `16_TLS_HTTPS_Browser_Evidence.png` | HTTPS browser 
+| 17 | `17_Invalid_OTP.png` | Invalid OTP validation |
+| 18 | `18_Expired_OTP.png` | Expired OTP validation |evidence using `https://localhost:3000` |
 
 ## Purpose
 
@@ -36,3 +38,4 @@ These screenshots provide visual evidence for:
 - Negative/error cases
 - TLS 1.2+ security validation
 - HTTPS browser operation
+- Invalid and expired OTP validation
