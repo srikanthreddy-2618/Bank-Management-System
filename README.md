@@ -71,7 +71,43 @@ $env:BMS_STORE_ENCRYPTION_KEY="replace-with-a-strong-32-plus-character-secret"
 npm start
 ```
 
-When `BMS_PERSISTENCE=true` (the default), `BMS_STORE_ENCRYPTION_KEY` is required. The server refuses to start without it. Open **http://localhost:3000**.
+When `BMS_PERSISTENCE=true` (the default), `BMS_STORE_ENCRYPTION_KEY` is required. The server refuses to start without it. Without TLS certificate paths, the server uses **http://localhost:3000**. To use HTTPS locally, follow the setup below.
+
+
+
+### Local HTTPS setup (Windows)
+
+The backend can serve HTTPS when both `BMS_TLS_KEY_FILE` and `BMS_TLS_CERT_FILE` are configured. For local development, use [mkcert](https://github.com/FiloSottile/mkcert) to create a locally trusted certificate.
+
+1. Install mkcert and run the following in Command Prompt:
+
+```cmd
+mkcert -install
+if not exist certs mkdir certs
+mkcert -key-file certs\localhost-key.pem -cert-file certs\localhost-cert.pem localhost 127.0.0.1 ::1
+```
+
+2. In the same Command Prompt session used to start the server, configure the certificate paths:
+
+```cmd
+set BMS_TLS_KEY_FILE=certs\localhost-key.pem
+set BMS_TLS_CERT_FILE=certs\localhost-cert.pem
+set BMS_TLS_CA_FILE=
+```
+
+3. Set `BMS_STORE_ENCRYPTION_KEY` to the original key for the existing encrypted local database. Keep that secret outside source control; changing it without migrating the data makes the encrypted store unreadable.
+
+4. Start the application with `npm start` and open **https://localhost:3000**. If TLS variables are not set, the application continues to use HTTP.
+
+To validate TLS support independently, run:
+
+```cmd
+npm run tls:test
+```
+
+The automated test creates a temporary self-signed certificate and verifies an HTTPS health request negotiated TLS 1.2 or TLS 1.3. It requires OpenSSL to be available on the system PATH.
+
+**Security:** Never commit `.env`, private keys, certificates, encryption keys, or local database files. Local certificates are generated separately on each developer's machine.
 
 ### Demo customer
 
