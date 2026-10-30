@@ -3,3 +3,11 @@ node_modules/
 backend/data/db.json
 coverage/
 .DS_Store
+
+# Local HTTPS certificates and private keys
+certs/
+*.pem
+*.key
+
+# Local application data
+backend/data/
