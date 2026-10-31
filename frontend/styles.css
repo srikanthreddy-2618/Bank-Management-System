@@ -7,6 +7,15 @@
   color:#eaf2ff;
   line-height:1.55;
   font-synthesis:none;
+  --contrast-reference-ink:#172033;
+  --contrast-reference-muted:#667085;
+  --contrast-reference-blue:#1769aa;
+  --contrast-reference-secondary-ink:#24415f;
+  --contrast-reference-success:#2f6b3f;
+  --contrast-reference-danger:#8a1f11;
+  --contrast-reference-light:#f4f7fb;
+  --contrast-reference-secondary:#e8eef6;
+  --contrast-reference-success-bg:#eaf4ed;
   --bg:#07111f;
   --surface:#0e1b2d;
   --surface-raised:#13243a;
@@ -117,7 +126,7 @@ body.authenticated main{margin-left:252px;max-width:1600px;padding:36px clamp(22
 .panel h3{margin-bottom:18px}
 .panel>form h4{color:#dceaff}
 .panel label{display:block;margin:12px 0;color:#c8d8ed;font-size:.78rem;font-weight:700}
-input,select,textarea{display:block;width:100%;margin-top:7px;padding:11px 13px;border:1px solid #304761;border-radius:10px;background:#0a1829;color:#edf5ff;font-size:.88rem;outline:none;transition:border-color .18s ease,box-shadow .18s ease}
+input,select,textarea{display:block;width:100%;margin-top:7px;padding:11px 13px;border:1px solid #304761;border-radius:10px;background:#0a1829;color:#edf5ff;font-size:.88rem;outline:1px solid transparent;transition:border-color .18s ease,box-shadow .18s ease}
 input::placeholder,textarea::placeholder{color:#7187a3}
 input:focus,select:focus,textarea:focus{border-color:#4b98ff;box-shadow:0 0 0 3px rgba(65,145,255,.13)}
 input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.8)}
