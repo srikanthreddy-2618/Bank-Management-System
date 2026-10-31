@@ -8,13 +8,32 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to main content</a>
-  <header class="topbar">
-    <div>
-      <h1><span aria-hidden="true">🏦</span> Bank Management System</h1>
-      <p>Secure banking operations</p>
+  <aside class="topbar" id="appSidebar" aria-label="Banking navigation">
+    <a class="brand-lockup" href="#overview" aria-label="BMS home">
+      <span class="brand-mark" aria-hidden="true">B</span>
+      <span class="brand-copy"><strong>BMS</strong><small>Digital banking</small></span><span hidden><span aria-hidden="true">🏦</span></span>
+    </a>
+    <div class="sidebar-section-label">WORKSPACE</div>
+    <nav class="side-nav" aria-label="Main navigation">
+      <a class="nav-link active" href="#overview" data-nav="overview"><span class="nav-glyph">◫</span><span>Overview</span></a>
+      <a class="nav-link" href="#accountCards" data-nav="accounts"><span class="nav-glyph">▣</span><span>My accounts</span></a>
+      <a class="nav-link" href="#paymentsGrid" data-nav="payments"><span class="nav-glyph">⇄</span><span>Payments</span></a>
+      <a class="nav-link" href="#transactionPanel" data-nav="transactions"><span class="nav-glyph">↕</span><span>Transactions</span></a>
+      <a class="nav-link" href="#statementPanel" data-nav="statements"><span class="nav-glyph">▤</span><span>Statements</span></a>
+      <a class="nav-link" href="#beneficiaryPanel" data-nav="beneficiaries"><span class="nav-glyph">♧</span><span>Beneficiaries</span></a>
+      <a class="nav-link" href="#loansPanel" data-nav="loans"><span class="nav-glyph">◇</span><span>Loans</span></a>
+      <div class="sidebar-section-label">ACCOUNT</div>
+      <a class="nav-link" href="#profilePanel" data-nav="profile"><span class="nav-glyph">○</span><span>My profile</span></a>
+      <div class="sidebar-section-label staff-nav-label hidden" id="staffNavHeading">BANK OPERATIONS</div>
+      <a class="nav-link staff-nav-item hidden" id="navReports" href="#operationalReportsPanel" data-nav="reports"><span class="nav-glyph">▥</span><span>Reports &amp; analytics</span></a>
+      <a class="nav-link staff-nav-item hidden" id="navAudit" href="#auditTrailPanel" data-nav="audit"><span class="nav-glyph">◉</span><span>Audit trail</span></a>
+      <a class="nav-link staff-nav-item hidden" id="navAdmin" href="#userAdminPanel" data-nav="admin"><span class="nav-glyph">⚙</span><span>Administration</span></a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-security"><span class="security-dot"></span><span><strong>Secure session</strong><small id="sidebarRole">Verified access</small></span></div>
+      <button id="logoutBtn" type="button" class="logout-button hidden"><span aria-hidden="true">↗</span> Sign out</button>
     </div>
-    <button id="logoutBtn" type="button" class="secondary hidden">Logout</button>
-  </header>
+  </aside>
 
   <main id="main" tabindex="-1">
     <section id="loginView" class="panel auth-panel">
@@ -34,14 +53,38 @@
     </section>
 
     <section id="dashboardView" class="hidden">
-      <div class="welcome">
-        <div><h2 id="welcomeName" tabindex="-1">Dashboard</h2><p id="roleText" class="muted"></p></div>
-        <div id="apiStatus" class="status" role="status">Checking API…</div>
+      <div class="welcome" id="overview">
+        <div class="welcome-copy">
+          <span class="eyebrow">YOUR FINANCIAL OVERVIEW</span>
+          <h2 id="welcomeName" tabindex="-1">Welcome back</h2>
+          <p id="roleText" class="muted"></p>
+        </div>
+        <div class="welcome-status">
+          <div id="apiStatus" class="status" role="status">Checking API…</div>
+          <span class="today-label" id="todayLabel">Secure digital banking</span>
+        </div>
       </div>
 
-      <div id="accountCards" class="cards"></div>
+      <section class="balance-hero" aria-label="Total account balance">
+        <div class="balance-hero-orb" aria-hidden="true"></div>
+        <div class="balance-hero-copy">
+          <span class="balance-label">TOTAL AVAILABLE BALANCE</span>
+          <strong id="totalBalanceValue">₹0.00</strong>
+          <span id="accountCountValue">Across your active accounts</span>
+        </div>
+        <div class="balance-hero-actions">
+          <a class="hero-action primary" href="#paymentsGrid"><span>＋</span> Make a payment</a>
+          <a class="hero-action" href="#transactionPanel">View activity <span>↗</span></a>
+        </div>
+      </section>
 
-      <div class="grid">
+      <div class="section-intro accounts-intro">
+        <div><span class="eyebrow">YOUR PORTFOLIO</span><h3>My accounts</h3><p class="muted">A clear view of your banking relationships.</p></div>
+        <span class="section-note">LIVE ACCOUNT OVERVIEW</span>
+      </div>
+      <div id="accountCards" class="cards account-cards"></div>
+
+      <div class="grid payment-grid" id="paymentsGrid">
         <section class="panel">
           <h3>Cash Deposit</h3>
           <form id="depositForm">
@@ -70,7 +113,7 @@
           </form>
         </section>
 
-        <section class="panel">
+        <section class="panel beneficiary-panel" id="beneficiaryPanel">
           <h3>Add Beneficiary</h3>
           <form id="beneficiaryForm">
             <label>Name<input id="beneficiaryName" required></label>
@@ -81,8 +124,8 @@
         </section>
       </div>
 
-      <section class="panel">
-        <div class="section-head"><h3>Transaction History</h3><button id="refreshBtn" type="button" class="secondary">Refresh</button></div>
+      <section class="panel content-panel" id="transactionPanel">
+        <div class="section-head"><h3>Recent transactions</h3><button id="refreshBtn" type="button" class="secondary">Refresh</button></div>
         <form id="historyFilterForm" class="history-filter">
           <label>Account<select id="historyAccount"></select></label>
           <label>From<input id="historyFrom" type="date"></label>
@@ -99,7 +142,7 @@
         </div>
       </section>
 
-      <section class="panel" id="statementPanel">
+      <section class="panel content-panel" id="statementPanel">
         <div class="section-head"><h3>Account Statement</h3><button id="statementBtn" type="button">Generate statement</button></div>
         <form id="statementForm" class="history-filter">
           <label>Account<select id="statementAccount"></select></label>
@@ -116,7 +159,7 @@
         </div>
       </section>
 
-      <section class="panel" id="loansPanel">
+      <section class="panel content-panel" id="loansPanel">
         <div class="section-head"><h3>Loans</h3><button id="refreshLoansBtn" class="secondary" type="button">Refresh loans</button></div>
         <form id="loanApplicationForm">
           <h4>Apply for a loan</h4>
@@ -138,7 +181,7 @@
         <p id="loansMessage" class="message" aria-live="polite"></p>
       </section>
 
-      <section class="panel hidden" id="auditTrailPanel">
+      <section class="panel content-panel hidden" id="auditTrailPanel">
         <div class="section-head"><h3>Audit Trail (Staff)</h3></div>
         <form id="auditFilterForm" class="history-filter">
           <label>Result<select id="auditResult"><option value="">All results</option><option value="SUCCESS">Success</option><option value="FAILURE">Failure</option></select></label>
@@ -161,13 +204,13 @@
         </div>
       </section>
 
-      <section class="panel hidden" id="operationalReportsPanel">
+      <section class="panel content-panel hidden" id="operationalReportsPanel">
         <div class="section-head"><h3>Operational Reports (Staff)</h3><button id="refreshReportBtn" class="secondary" type="button">Refresh report</button></div>
         <p class="muted">Aggregated metrics from the current local demo store.</p>
-        <pre id="operationalReportOutput" class="report-output">Report not loaded.</pre>
+        <div id="operationalReportOutput" class="report-output" aria-live="polite"><p class="muted">Report not loaded.</p></div>
       </section>
 
-      <section class="panel hidden" id="userAdminPanel">
+      <section class="panel content-panel hidden" id="userAdminPanel">
         <div class="section-head"><h3>User &amp; Role Administration (Staff)</h3><button id="refreshUsersBtn" class="secondary" type="button">Refresh users</button></div>
         <form id="adminUserForm" class="grid">
           <label>Name<input id="adminUserName" required minlength="2" maxlength="120"></label>
@@ -194,8 +237,8 @@
         <p id="adminUserMessage" class="message" aria-live="polite"></p>
       </section>
 
-      <section class="panel">
-        <h3>Profile</h3>
+      <section class="panel content-panel" id="profilePanel">
+        <div class="section-head"><div><span class="eyebrow">PERSONAL SETTINGS</span><h3>My profile</h3></div></div>
         <form id="profileForm" class="inline-form">
           <label>Name<input id="profileName" autocomplete="name" required></label>
           <label>Phone<input id="profilePhone" type="tel" autocomplete="tel" required></label>

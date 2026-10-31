@@ -58,12 +58,14 @@ function toastError(message) {
 }
 
 function showLogin() {
+  document.body.classList.remove("authenticated");
   $("loginView").classList.remove("hidden");
   $("dashboardView").classList.add("hidden");
   $("logoutBtn").classList.add("hidden");
 }
 
 function showDashboard() {
+  document.body.classList.add("authenticated");
   $("loginView").classList.add("hidden");
   $("dashboardView").classList.remove("hidden");
   $("logoutBtn").classList.remove("hidden");
@@ -116,17 +118,30 @@ async function loadDashboard() {
     $("operationalReportsPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("auditTrailPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("userAdminPanel").classList.toggle("hidden", state.userRole !== "STAFF");
+    ["navReports","navAudit","navAdmin","staffNavHeading"].forEach(id => $(id).classList.toggle("hidden", state.userRole !== "STAFF"));
+    $("sidebarRole").textContent = state.userRole === "STAFF" ? "Staff workspace" : "Customer workspace";
     $("profileName").value = me.user.name;
     $("profilePhone").value = me.user.phone;
 
     const accounts = await api("/api/accounts");
     state.accounts = accounts.accounts;
-    $("accountCards").innerHTML = state.accounts.map(a => `
-      <div class="card">
-        <div class="label">${a.type} • ${a.status}</div>
-        <div class="value">₹${a.balance.toFixed(2)}</div>
-        <small>A/C ${a.accountNumber}</small>
-      </div>`).join("");
+    const activeAccountList = state.accounts.filter(account => account.status === "ACTIVE");
+    const totalBalance = activeAccountList.reduce((sum, account) => sum + Number(account.balance || 0), 0);
+    $("totalBalanceValue").textContent = formatINR(totalBalance);
+    const activeAccounts = activeAccountList.length;
+    $("accountCountValue").textContent = `Across ${activeAccounts} active account${activeAccounts === 1 ? "" : "s"}`;
+    $("accountCards").innerHTML = state.accounts.map(account => `
+      <article class="card account-card">
+        <div class="account-card-head">
+          <span class="label">${escapeHtml(account.type)} ACCOUNT</span>
+          <span class="account-state">${escapeHtml(account.status)}</span>
+        </div>
+        <div class="value">${formatINR(account.balance)}</div>
+        <div class="card-foot">
+          <small>•••• •••• ${escapeHtml(String(account.accountNumber).slice(-4))}</small>
+          <span class="card-symbol" aria-hidden="true">◈</span>
+        </div>
+      </article>`).join("");
     const options = accountSelectOptions();
     ["depositAccount","withdrawAccount","transferAccount","statementAccount"].forEach(id => $(id).innerHTML = options);
     // Rebuild the history account filter but keep the user's current selection across refreshes.
@@ -383,9 +398,55 @@ async function loadAuditRetention() {
     `; ${status.expiredRecords} past retention. ${outcome}.`;
 }
 
+function formatINR(value) {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(Number(value || 0));
+}
+
+function reportBar(label, value, total, detail = "") {
+  const amount = Math.max(0, Number(value || 0));
+  const safeTotal = Math.max(1, Number(total || 0));
+  const width = Math.max(amount > 0 ? 2 : 0, Math.min(100, amount / safeTotal * 100));
+  return `<div class="report-stat"><span>${escapeHtml(label)}</span><strong>${amount.toLocaleString("en-IN")}${detail ? ` · ${escapeHtml(detail)}` : ""}</strong><div class="report-track"><div class="report-fill" style="width:${width.toFixed(1)}%"></div></div></div>`;
+}
+
 async function loadOperationalReport() {
   const report = await api("/api/admin/reports/summary");
-  $("operationalReportOutput").textContent = JSON.stringify(report, null, 2);
+  const accounts = report.accounts || {};
+  const transactions = report.transactions || {};
+  const loans = report.loans || {};
+  const transactionTypes = transactions.countByType || {};
+  const totalTransactions = Number(transactions.total || 0);
+  const transactionTypeRows = Object.entries(transactionTypes).sort((a,b) => Number(b[1]) - Number(a[1]));
+  const maxTypeCount = Math.max(1, ...transactionTypeRows.map(([,count]) => Number(count || 0)));
+  const transactionBars = transactionTypeRows.length
+    ? transactionTypeRows.map(([type,count]) => reportBar(type.replace(/_/g," ").toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()), count, maxTypeCount, "events")).join("")
+    : '<p class="muted">No transaction activity recorded yet.</p>';
+  const accountStatusBars = [
+    reportBar("Active accounts", accounts.active, accounts.total),
+    reportBar("Frozen accounts", accounts.frozen, accounts.total),
+    reportBar("Closed accounts", accounts.closed, accounts.total)
+  ].join("");
+  const loanStatusBars = [
+    reportBar("Approved", loans.approved, loans.total),
+    reportBar("Pending", loans.pending, loans.total),
+    reportBar("Rejected", loans.rejected, loans.total),
+    reportBar("Paid", loans.paid, loans.total)
+  ].join("");
+  const generated = report.generatedAt ? new Date(report.generatedAt).toLocaleString() : "Not available";
+  $("operationalReportOutput").innerHTML = `
+    <div class="report-kpis">
+      <article class="report-kpi"><span class="report-kpi-label">TOTAL ACCOUNT BALANCE</span><strong class="report-kpi-value">${formatINR(accounts.totalBalance)}</strong><span class="report-kpi-note">${Number(accounts.total || 0)} accounts · ${Number(accounts.active || 0)} active</span></article>
+      <article class="report-kpi"><span class="report-kpi-label">TRANSACTIONS</span><strong class="report-kpi-value">${totalTransactions.toLocaleString("en-IN")}</strong><span class="report-kpi-note">${Number(transactions.withdrawals || 0)} withdrawals · ${Number(transactions.deposits || 0)} deposits</span></article>
+      <article class="report-kpi"><span class="report-kpi-label">LOAN PORTFOLIO</span><strong class="report-kpi-value">${Number(loans.total || 0).toLocaleString("en-IN")}</strong><span class="report-kpi-note">${Number(loans.approved || 0)} approved applications</span></article>
+      <article class="report-kpi"><span class="report-kpi-label">AUDIT EVENTS</span><strong class="report-kpi-value">${Number(report.auditEvents || 0).toLocaleString("en-IN")}</strong><span class="report-kpi-note">Recorded security and banking events</span></article>
+    </div>
+    <div class="report-panels-grid">
+      <section class="report-card"><h4>Account status</h4><div class="report-stat-list">${accountStatusBars}</div><p class="report-card-note">${Number(accounts.total || 0)} total accounts in the current demo store.</p></section>
+      <section class="report-card"><h4>Transaction activity</h4><div class="report-stat-list">${transactionBars}</div><p class="report-card-note">Deposit volume: ${formatINR(transactions.depositAmount)} · Withdrawal volume: ${formatINR(transactions.withdrawalAmount)}</p></section>
+      <section class="report-card"><h4>Loan portfolio</h4><div class="report-stat-list">${loanStatusBars}</div><p class="report-card-note">Outstanding repayment balance: <strong>${formatINR(loans.outstandingBalance)}</strong></p></section>
+      <section class="report-card"><h4>Operational snapshot</h4><div class="report-operational-number">${Number(report.auditEvents || 0).toLocaleString("en-IN")}</div><p class="report-card-note">Audit events currently recorded. Data reflects the live local demo store, not a historical warehouse.</p></section>
+    </div>
+    <div class="report-footnote"><span>Scope: ${escapeHtml(report.scope || "CURRENT_LOCAL_DEMO_STORE")}</span><span>Generated: ${escapeHtml(generated)}</span></div>`;
 }
 
 function setPendingLoanRepayment(loanId, request) {
@@ -620,5 +681,12 @@ $("logoutBtn").onclick = async () => {
   try { if (state.token) await api("/api/auth/logout", { method:"POST" }); } catch {}
   state.token = null; localStorage.removeItem("bmsToken"); state.pendingUserId = null; showLogin(); $("loginForm").classList.remove("hidden"); $("otpForm").classList.add("hidden"); toast("Logged out");
 };
+
+document.querySelectorAll(".side-nav a").forEach(link => {
+  link.addEventListener("click", () => {
+    document.querySelectorAll(".side-nav a").forEach(item => item.classList.remove("active"));
+    link.classList.add("active");
+  });
+});
 
 if (state.token) loadDashboard(); else showLogin();
