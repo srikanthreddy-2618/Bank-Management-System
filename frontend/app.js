@@ -118,16 +118,17 @@ async function loadDashboard() {
     $("operationalReportsPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("auditTrailPanel").classList.toggle("hidden", state.userRole !== "STAFF");
     $("userAdminPanel").classList.toggle("hidden", state.userRole !== "STAFF");
-    ["navReports","navAudit","navAdmin"].forEach(id => $(id).classList.toggle("hidden", state.userRole !== "STAFF"));
+    ["navReports","navAudit","navAdmin","staffNavHeading"].forEach(id => $(id).classList.toggle("hidden", state.userRole !== "STAFF"));
     $("sidebarRole").textContent = state.userRole === "STAFF" ? "Staff workspace" : "Customer workspace";
     $("profileName").value = me.user.name;
     $("profilePhone").value = me.user.phone;
 
     const accounts = await api("/api/accounts");
     state.accounts = accounts.accounts;
-    const totalBalance = state.accounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
+    const activeAccountList = state.accounts.filter(account => account.status === "ACTIVE");
+    const totalBalance = activeAccountList.reduce((sum, account) => sum + Number(account.balance || 0), 0);
     $("totalBalanceValue").textContent = formatINR(totalBalance);
-    const activeAccounts = state.accounts.filter(account => account.status === "ACTIVE").length;
+    const activeAccounts = activeAccountList.length;
     $("accountCountValue").textContent = `Across ${activeAccounts} active account${activeAccounts === 1 ? "" : "s"}`;
     $("accountCards").innerHTML = state.accounts.map(account => `
       <article class="card account-card">
