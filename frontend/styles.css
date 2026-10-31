@@ -210,7 +210,10 @@ body:not(.authenticated) main{min-height:100vh;display:grid;align-content:center
   .brand-mark{width:34px;height:34px;border-radius:10px;font-size:1.08rem}
   .brand-copy strong{font-size:1rem}
   .brand-copy small{font-size:.63rem}
-  .sidebar-section-label,.sidebar-bottom{display:none}
+  .sidebar-section-label{display:none}
+  .sidebar-bottom{display:block;position:absolute;right:14px;top:12px;margin:0;padding:0}
+  .sidebar-security{display:none}
+  .logout-button{width:auto;margin:0;padding:7px 10px;font-size:.72rem}
   .side-nav{flex-direction:row;gap:5px;overflow-x:auto;overflow-y:hidden;padding-bottom:2px}
   .nav-link{min-height:37px;flex:0 0 auto;gap:7px;padding:7px 10px;font-size:.72rem}
   .nav-glyph{width:19px;height:19px;font-size:.86rem}
