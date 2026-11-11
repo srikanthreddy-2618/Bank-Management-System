@@ -38,11 +38,29 @@ The following validation scenarios were also checked:
 - Logout
 
 All the above tests behaved as expected.
+## Automated Test Execution
+
+Automated API and integration tests were executed using Node.js.
+
+Command executed (Windows):
+
+cmd /C "set BMS_PERSISTENCE=false&& node --test tests/api.test.js tests/remaining-requirements.test.js tests/data-encryption.test.js"
+
+### Result
+
+- Total Tests: 70
+- Passed: 70
+- Failed: 0
+- Skipped: 0
+- Duration: ~13.5 seconds
+
+Status: PASS
 
 ## Test Evidence
 
-Screenshots are available in the `screenshots` folder.
+The following evidence has been captured and are available in the `screenshots` folder.
 
+### Manual Testing
 Examples:
 
 - 01_Login_page.png
@@ -63,10 +81,20 @@ Examples:
 - 17_Invalid_OTP.png
 - 18_Expired_OTP.png
 
+### Automated Testing
+![alt text](image.png)
+
 ## Bugs
 
 No major issues were found during testing. All assigned test cases completed successfully.
 
 ## Final Result
 
-Overall, the tested features are working as expected and all assigned functional test cases passed.
+Manual testing and automated testing were completed successfully.
+
+- Functional test cases: Passed
+- Negative test cases: Passed
+- Security validation: Passed
+- Automated test suite: 70/70 Passed
+
+The Bank Management System satisfies the tested functional and non-functional requirements.
