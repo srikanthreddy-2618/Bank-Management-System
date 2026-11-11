@@ -82,7 +82,7 @@ Examples:
 - 18_Expired_OTP.png
 
 ### Automated Testing
-![alt text](image.png)
+![Automated Test Execution](screenshots/test_execution_results.png)
 
 ## Bugs
 
